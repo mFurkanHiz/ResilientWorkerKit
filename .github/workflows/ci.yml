@@ -25,10 +25,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Setup .NET 8
+      - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '8.0.x'
+          # net8.0 is a build target of the libraries; net10.0 runs the tests and samples.
+          dotnet-version: |
+            8.0.x
+            10.0.x
 
       - name: Restore
         run: dotnet restore
@@ -89,10 +92,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Setup .NET 8
+      - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '8.0.x'
+          # net8.0 is a build target of the libraries; net10.0 runs the tests and samples.
+          dotnet-version: |
+            8.0.x
+            10.0.x
 
       - name: Build samples
         run: |
@@ -105,10 +111,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Setup .NET 8
+      - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '8.0.x'
+          # net8.0 is a build target of the libraries; net10.0 runs the tests and samples.
+          dotnet-version: |
+            8.0.x
+            10.0.x
 
       - name: Restore
         run: dotnet restore
@@ -134,13 +143,21 @@ jobs:
         with:
           fetch-depth: 0 # SourceLink needs full history
 
-      - name: Setup .NET 8
+      - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '8.0.x'
+          # net8.0 is a build target of the libraries; net10.0 runs the tests and samples.
+          dotnet-version: |
+            8.0.x
+            10.0.x
 
+      # Only the library projects are packable; packing the solution would emit a warning
+      # for every sample and test project.
       - name: Pack
-        run: dotnet pack --configuration Release --output ./artifacts
+        run: |
+          for project in src/*/*.csproj; do
+            dotnet pack "$project" --configuration Release --output ./artifacts
+          done
 
       - name: Upload packages
         uses: actions/upload-artifact@v5

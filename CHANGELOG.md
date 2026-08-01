@@ -2,13 +2,16 @@
 
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html) — with the pre-1.0 caveat that the
-public API may still change in a minor version.
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html): from 1.0 onwards, breaking changes
+require a major version and additive capabilities a minor one.
 
-## [0.1.0] — 2026-08-01
+## [1.0.0] — 2026-08-01
 
-First public release. The reliability primitives, done properly, with documentation that matches
-the code.
+First public release. The public API is fixed under semantic versioning; the reliability
+primitives are complete for the stated scope, and the documentation matches the code.
+
+Targets **`net10.0` and `net8.0`** — the two LTS releases in support — with framework-matched
+dependencies for each.
 
 ### Added
 
@@ -69,8 +72,11 @@ the code.
 - No exactly-once execution — the contract is at-least-once plus checkpoints plus idempotency.
 - Single active host instance: locking is in-process; distributed locking is the top roadmap item.
 - No dashboard or admin API; job definitions live in code.
-- Packages are not published to NuGet yet.
+- Packages are not published to NuGet yet; the release assets are the CI-equivalent builds.
+
+These are boundaries of the 1.0 scope, not defects. Lifting the single-instance constraint is
+additive (`IJobLockProvider` is already the seam) and is planned for a 1.x release.
 
 See [docs/limitations.md](docs/limitations.md) for the full list.
 
-[0.1.0]: https://github.com/mFurkanHiz/ResilientWorkerKit/releases/tag/v0.1.0
+[1.0.0]: https://github.com/mFurkanHiz/ResilientWorkerKit/releases/tag/v1.0.0

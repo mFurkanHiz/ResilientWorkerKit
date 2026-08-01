@@ -1,7 +1,13 @@
 <Project>
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <!--
+      Libraries multi-target the two supported LTS releases:
+        net10.0 — current LTS, so consumers get framework-matched dependencies
+        net8.0  — still in support until November 2026, for hosts that have not moved yet
+      Samples and tests build for net10.0 only; nothing about them needs downlevel coverage.
+    -->
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -16,7 +22,7 @@
     <Authors>Mert Furkan Hız</Authors>
     <Product>ResilientWorkerKit</Product>
     <Copyright>Copyright (c) 2026 Mert Furkan Hız</Copyright>
-    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionPrefix>1.0.0</VersionPrefix>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/mFurkanHiz/ResilientWorkerKit</PackageProjectUrl>
     <RepositoryUrl>https://github.com/mFurkanHiz/ResilientWorkerKit</RepositoryUrl>
@@ -41,8 +47,10 @@
     <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" Condition="'$(CI)' == 'true'" />
   </ItemGroup>
 
-  <!-- Samples and tests are never packed. -->
+  <!-- Samples and tests are never packed and build for the current LTS only. -->
   <PropertyGroup Condition="$(MSBuildProjectDirectory.Contains('samples')) or $(MSBuildProjectDirectory.Contains('tests'))">
+    <TargetFrameworks></TargetFrameworks>
+    <TargetFramework>net10.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>

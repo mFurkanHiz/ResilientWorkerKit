@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/mFurkanHiz/ResilientWorkerKit/actions/workflows/ci.yml/badge.svg)](https://github.com/mFurkanHiz/ResilientWorkerKit/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4)](https://dotnet.microsoft.com/download/dotnet/8.0)
+[![.NET](https://img.shields.io/badge/.NET-10.0%20%7C%208.0-512BD4)](https://dotnet.microsoft.com/download/dotnet/10.0)
 [![Tests](https://img.shields.io/badge/tests-182%20passing-brightgreen)](#tests)
 [![Coverage](https://img.shields.io/badge/coverage-86.4%25%20lines-brightgreen)](#tests)
 
@@ -143,8 +143,8 @@ Details in [docs/architecture.md](docs/architecture.md).
 
 ## Getting started
 
-> **Not on NuGet yet.** v0.1.0 is published here as source and as a CI-built package artifact
-> while the public API settles. Clone the repository, or reference the projects directly:
+> **Not on NuGet yet.** v1.0.0 is published here as source and as signed-by-CI package artifacts
+> attached to the release. Clone the repository, or reference the projects directly:
 >
 > ```bash
 > git clone https://github.com/mFurkanHiz/ResilientWorkerKit.git
@@ -431,8 +431,12 @@ succeeded. They are fixed, and the process is why [docs/](docs) matches behavior
 
 ## Requirements
 
-.NET 8.0 or later. Targets `net8.0` only: it is the LTS, it runs on .NET 8/9/10 hosts, and
-multi-targeting would add build complexity without a functional benefit today.
+Multi-targets **`net10.0` and `net8.0`**, the two LTS releases currently in support.
+
+A `net8.0`-only library would technically run on a .NET 10 host, but it would drag .NET 8 versions
+of `Microsoft.Extensions.*` into a .NET 10 application. Targeting both means each consumer gets
+framework-matched dependencies. The `net8.0` leg exists because .NET 8 remains supported until
+November 2026; it will be dropped in a later major version once that window closes.
 
 ## License
 

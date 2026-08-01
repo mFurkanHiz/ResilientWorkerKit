@@ -62,7 +62,7 @@ for work A left behind) rather than expecting orchestration.
 ## Time zone data
 
 Time zone resolution uses `TimeZoneInfo.FindSystemTimeZoneById`, which needs IANA data present on
-the host. On .NET 8 this works on Linux and on Windows (via ICU), but a container built
+the host. On .NET 8 and .NET 10 this works on Linux and on Windows (via ICU), but a container built
 `InvariantGlobalization=true` or without tzdata will throw `JobConfigurationException` at
 startup — deliberately, at startup, rather than silently running in UTC.
 
@@ -101,5 +101,9 @@ copy.
 
 ## Version status
 
-v0.1 is pre-1.0: the public API may change based on feedback before 1.0. Types under `*.Internal`
-namespaces and `internal` types carry no compatibility guarantee at any version.
+v1.0.0 fixes the public API under [semantic versioning](https://semver.org): breaking changes
+require a major version, new capabilities a minor one. Types under `*.Internal` namespaces and
+`internal` types carry no compatibility guarantee at any version.
+
+The `net8.0` target will be dropped in a future major version once .NET 8 leaves support
+(November 2026).

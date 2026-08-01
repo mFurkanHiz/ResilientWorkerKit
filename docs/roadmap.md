@@ -73,18 +73,23 @@ These stay out regardless of demand, because they change what the library *is*:
 
 ## NuGet publication
 
-Publication is intentionally **not** wired into CI. The release path when the API settles:
+Publication is intentionally **not** wired into CI, so a push can never become an accidental
+release. The remaining steps:
 
-1. Set the real `Authors`, `PackageProjectUrl` and `RepositoryUrl` in
-   [`Directory.Build.props`](../Directory.Build.props).
-2. Tag `v0.1.0`; a separate, manually triggered release workflow builds, tests, packs and pushes
-   with `dotnet nuget push` using a repository secret.
+1. Reserve the `ResilientWorkerKit*` package ids on nuget.org.
+2. Add a separate, manually triggered release workflow that builds, tests, packs and pushes with
+   `dotnet nuget push` using a repository secret, gated on a tag.
 3. Publish symbol packages (`.snupkg`) alongside, so SourceLink debugging works for consumers.
-4. Announce the exactly-once limitation and the single-instance constraint in the release notes —
-   they are the two things an adopter most needs to know up front.
+4. Keep the exactly-once limitation and the single-instance constraint at the top of the release
+   notes — they are the two things an adopter most needs to know up front.
+
+## Target frameworks
+
+The libraries multi-target `net10.0` and `net8.0`, the two LTS releases in support. The `net8.0`
+leg is dropped in the first major version released after .NET 8 leaves support in November 2026.
 
 ## Versioning policy
 
-Pre-1.0 the public API may change with a minor version. From 1.0 the library follows semantic
-versioning; types under `*.Internal` namespaces and `internal` types never carry a compatibility
-guarantee.
+From 1.0 the library follows [semantic versioning](https://semver.org): breaking changes require a
+major version, additive capabilities a minor one. Types under `*.Internal` namespaces and
+`internal` types never carry a compatibility guarantee.

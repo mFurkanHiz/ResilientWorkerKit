@@ -13,14 +13,13 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <!-- TODO before publishing: set Authors and the repository URLs to your real GitHub identity. -->
-    <Authors>ResilientWorkerKit Authors</Authors>
+    <Authors>Mert Furkan Hız</Authors>
     <Product>ResilientWorkerKit</Product>
-    <Copyright>Copyright (c) ResilientWorkerKit contributors</Copyright>
+    <Copyright>Copyright (c) 2026 Mert Furkan Hız</Copyright>
     <VersionPrefix>0.1.0</VersionPrefix>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/OWNER/ResilientWorkerKit</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/OWNER/ResilientWorkerKit</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/mFurkanHiz/ResilientWorkerKit</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/mFurkanHiz/ResilientWorkerKit</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>worker;background-service;scheduling;retry;resilience;checkpoint;idempotency;dotnet;hosted-service;jobs</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>

@@ -2,9 +2,11 @@
 
 **Keep writing plain `BackgroundService` jobs — stop rewriting scheduling, retry, checkpointing, idempotency and health tracking in every project.**
 
-[![CI](https://github.com/OWNER/ResilientWorkerKit/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/ResilientWorkerKit/actions/workflows/ci.yml)
+[![CI](https://github.com/mFurkanHiz/ResilientWorkerKit/actions/workflows/ci.yml/badge.svg)](https://github.com/mFurkanHiz/ResilientWorkerKit/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4)](https://dotnet.microsoft.com/download/dotnet/8.0)
+[![Tests](https://img.shields.io/badge/tests-182%20passing-brightgreen)](#tests)
+[![Coverage](https://img.shields.io/badge/coverage-86.6%25%20lines-brightgreen)](#tests)
 
 ResilientWorkerKit is a lightweight reliability and execution layer for background jobs hosted in
 a .NET Generic Host. You write the business logic; the kit owns the loop, the failure boundary,
@@ -141,9 +143,16 @@ Details in [docs/architecture.md](docs/architecture.md).
 
 ## Getting started
 
-```bash
-dotnet add package ResilientWorkerKit
-```
+> **Not on NuGet yet.** v0.1.0 is published here as source and as a CI-built package artifact
+> while the public API settles. Clone the repository, or reference the projects directly:
+>
+> ```bash
+> git clone https://github.com/mFurkanHiz/ResilientWorkerKit.git
+> dotnet add YourApp reference ResilientWorkerKit/src/ResilientWorkerKit/ResilientWorkerKit.csproj
+> ```
+>
+> `dotnet pack` produces all five packages if you prefer a local feed. See
+> [docs/roadmap.md](docs/roadmap.md) for the publication plan.
 
 ```csharp
 using ResilientWorkerKit;
@@ -366,6 +375,45 @@ plumbing and defensive store-failure paths. Coverage runs in CI and is published
 | [testing.md](docs/testing.md) | How the kit is tested and how to test your own jobs |
 | [limitations.md](docs/limitations.md) | What this does not do |
 | [roadmap.md](docs/roadmap.md) | Distributed locks, admin API, dashboard, NuGet publication |
+
+## Design decisions worth explaining
+
+A few choices here were not the obvious ones. The reasoning matters more than the code:
+
+**At-least-once instead of a bigger promise.** Exactly-once across an external API call and a
+local database needs both sides in one protocol. Rather than pretend, the kit states the real
+contract and ships the two primitives that make it safe in practice — checkpoints and an atomic
+idempotency gate. A library that over-promises here fails silently in production; one that is
+explicit lets you design around it.
+
+**One hosted service with a loop per job, not one `BackgroundService` per job.** A single owner
+makes graceful shutdown, startup recovery and host-wide invariants tractable, while each job
+still gets an independent async loop. The isolation guarantee is enforced at two boundaries
+(runner and loop), so it holds even if one of them has a bug.
+
+**Occurrence identity instead of "did we run recently?".** A monthly job carries the identity
+`monthly-billing:2026-08`. Duplicate suppression asks whether that identity *completed*; misfire
+recovery asks whether *any record exists*. That asymmetry is deliberate: the first prevents
+double-billing, the second prevents a restart loop from re-creating the same missed run. Getting
+this wrong is how monthly jobs fire twice.
+
+**`TimeProvider` everywhere, no `DateTime.Now`.** Schedules are pure functions of their inputs,
+so DST gaps, ambiguous fall-back hours, leap years and 31st-of-February cases are ordinary table
+tests. A year of scheduling is verified in milliseconds, which is why the edge cases are actually
+covered rather than hoped about.
+
+**Metrics via BCL primitives, no OpenTelemetry package.** `Meter` and `ActivitySource` are already
+the integration point. Shipping an adapter package would have added a dependency and a version
+matrix to solve a problem that does not exist.
+
+**The failure classifier defaults unknown exceptions to transient.** An unnecessary retry costs a
+few attempts; skipping a necessary one loses work. Deterministic failures are expected to say so
+via `PermanentJobException` — the type system carries the intent instead of a heuristic guessing it.
+
+**Documentation written against the source, not from memory.** Doing that pass caught nine real
+defects — including exception messages being persisted unmasked, `MaxDelay` not actually being a
+maximum once jitter was applied, and a health rule that could never fire for a job that had never
+succeeded. They are fixed, and the process is why [docs/](docs) matches behavior.
 
 ## Known limitations
 

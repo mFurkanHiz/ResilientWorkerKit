@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4)](https://dotnet.microsoft.com/download/dotnet/8.0)
 [![Tests](https://img.shields.io/badge/tests-182%20passing-brightgreen)](#tests)
-[![Coverage](https://img.shields.io/badge/coverage-86.6%25%20lines-brightgreen)](#tests)
+[![Coverage](https://img.shields.io/badge/coverage-86.4%25%20lines-brightgreen)](#tests)
 
 ResilientWorkerKit is a lightweight reliability and execution layer for background jobs hosted in
 a .NET Generic Host. You write the business logic; the kit owns the loop, the failure boundary,
@@ -349,9 +349,13 @@ dotnet test
 Schedule and engine tests run on `FakeTimeProvider`, so a month of scheduling is verified in
 milliseconds — the whole suite finishes in about ten seconds.
 
-Measured coverage across the five library assemblies (coverlet, Release build):
-**86.6% lines, 78.8% branches, 94% methods**. The uncovered remainder is mostly log-message
-plumbing and defensive store-failure paths. Coverage runs in CI and is published as an artifact.
+Measured coverage across the five library assemblies, as reported by CI on the last run
+(coverlet, Release build): **86.4% lines, 78.9% branches, 94% methods**. The uncovered remainder
+is mostly log-message plumbing and defensive store-failure paths. The full HTML report is
+published as a CI artifact on every run.
+
+Both the Linux and Windows legs run the whole suite, which is how the write-ordering issue in
+`JobRunner` was caught: it only reproduced on the slower Windows runner.
 
 ## Documentation
 

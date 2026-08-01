@@ -305,6 +305,71 @@ Point 5 is verified end-to-end in
 retries against a 500-ing upstream, a second job continues completing normally on the same host,
 and after a restart the sync job resumes from its checkpoint and finishes.
 
+## Retry now vs. retry later
+
+There are two retry mechanisms and they solve different problems. Mixing them up is the easiest
+way to build something that looks reliable and is not.
+
+| | `WithRetry(...)` | `RetryLater(...)` |
+|---|---|---|
+| Scope | Attempts **inside** one execution | A **new execution** after one failed for good |
+| Typical delay | Seconds | Minutes to hours |
+| `ExecutionId` | Same across attempts | New, linked to the origin occurrence |
+| Where the wait lives | In memory, in the running execution | In the pending-occurrence store |
+| Survives a process restart | **No** | **Yes** |
+| Execution status while waiting | `Running` (holds the overlap lock) | Nothing is running |
+| Good for | A transient blip: a dropped connection, a 503 | "This action must eventually happen" |
+
+They compose. In-execution attempts are exhausted first; only then, if the execution ends
+`Failed`, is a follow-up queued.
+
+```csharp
+kit.AddJob<OpenTicketSaleJob>("ticket-sale-open", job => job
+    .AtLocalTimes("Europe/Istanbul", new DateTime(2026, 8, 15, 10, 0, 0))
+
+    // Fast, in-memory: ride out a momentary upstream hiccup.
+    .WithRetry(r => { r.MaxRetries = 2; r.BaseDelay = TimeSpan.FromSeconds(5); })
+
+    // Slow, durable: if the sale did not open, try again every 5 minutes, up to 3 times,
+    // even if the host is redeployed in between.
+    .RetryLater(maxAttempts: 3, delay: TimeSpan.FromMinutes(5)));
+```
+
+### How a follow-up is planned
+
+When an execution ends `Failed` and the job has a follow-up policy:
+
+1. The engine computes `DelayFor(ordinal)` — `Delay × BackoffMultiplier^(ordinal-1)`, clamped to
+   `MaxDelay`. With the defaults (multiplier 1) the follow-ups are evenly spaced.
+2. It writes a `PendingOccurrence` due at `now + delay`, with identity
+   `<origin identity>+followup-<n>` and `OriginScheduledExecutionId` pointing at the occurrence
+   that first failed.
+3. The scheduler loop treats the pending queue and the schedule as equals: whichever is due first
+   is what runs next. On startup the queue is read from the store, which is why a follow-up
+   queued by a process that no longer exists still runs.
+4. Claiming an occurrence deletes its row, so exactly one runner can win it.
+5. When the ordinal would exceed `MaxAttempts`, nothing more is queued and an **Error** is logged:
+   *"Follow-up retries exhausted after N attempt(s)"*.
+
+### Permanent failures
+
+By default a `Permanent` or `Misconfigured` failure does **not** queue a follow-up: a
+deterministic failure normally repeats, so retrying it only burns the window and the log. Opt in
+when an operator is expected to fix the cause between attempts:
+
+```csharp
+job.RetryLater(o =>
+{
+    o.MaxAttempts = 6;
+    o.Delay = TimeSpan.FromMinutes(30);
+    o.RetryPermanentFailures = true;
+});
+```
+
+> Follow-up retries are only as durable as the store behind them. The default in-memory store
+> loses the queue with the process, which defeats the purpose — configure
+> `UseEntityFrameworkCore(...)` (see [persistence.md](persistence.md)).
+
 ## Dead letters
 
 Two distinct mechanisms write to the same store. They are not interchangeable.

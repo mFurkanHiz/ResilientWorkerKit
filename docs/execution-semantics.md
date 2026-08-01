@@ -100,6 +100,15 @@ Only `Transient` failures are retried.
   consecutive failures — **and the host, the scheduler loop and every other job continue
   untouched**. The job runs again at its next scheduled occurrence.
 
+### Durable follow-up retries
+
+`WithRetry` covers transient blips within one execution, but its wait lives in memory: a restart
+during that window loses it, and for a one-time or explicit-time schedule the occurrence is then
+gone for good. `RetryLater` closes that gap by queueing a **new** occurrence in the pending
+store, which a later process picks up. The queued occurrence carries identity
+`<origin>+followup-<n>`, so duplicate suppression still applies, and claiming it is a delete so
+exactly one runner wins. See [failure-handling.md](failure-handling.md#retry-now-vs-retry-later).
+
 ### Write ordering guarantee
 
 Side records are written **before** the execution record reaches its terminal status. Observing

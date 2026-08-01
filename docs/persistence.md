@@ -1,7 +1,8 @@
 # Persistence
 
-All durable state flows through four store interfaces (`IJobCheckpointStore`,
-`IJobExecutionStore`, `IIdempotencyStore`, `IDeadLetterStore`). Two implementations ship:
+All durable state flows through five store interfaces (`IJobCheckpointStore`,
+`IJobExecutionStore`, `IIdempotencyStore`, `IDeadLetterStore`, `IPendingOccurrenceStore`).
+Two implementations ship:
 
 | Provider | Package | Durability | Use for |
 |---|---|---|---|
@@ -11,9 +12,10 @@ All durable state flows through four store interfaces (`IJobCheckpointStore`,
 ## In-memory stores: tests and demos only
 
 `AddResilientWorkerKit` registers `InMemoryJobCheckpointStore`, `InMemoryJobExecutionStore`,
-`InMemoryIdempotencyStore` and `InMemoryDeadLetterStore` with `TryAddSingleton`. They are correct,
-thread-safe (`ConcurrentDictionary`, with `TryAdd`/`TryUpdate` used to settle idempotency races) and
-**not suitable for production**, as each type's own XML documentation states.
+`InMemoryIdempotencyStore`, `InMemoryDeadLetterStore` and `InMemoryPendingOccurrenceStore` with
+`TryAddSingleton`. They are correct, thread-safe (`ConcurrentDictionary`, with `TryAdd`/`TryUpdate`
+used to settle idempotency races) and **not suitable for production**, as each type's own XML
+documentation states.
 
 What you lose by keeping them:
 
@@ -24,6 +26,8 @@ What you lose by keeping them:
 - Idempotency records vanish, so side effects that were suppressed before a restart happen again.
 - Dead letters vanish, so quarantined items are silently lost.
 - Startup recovery has nothing to mark `Abandoned`.
+- Queued follow-up retries vanish, which defeats the entire point of `RetryLater`: its promise is
+  that a planned action still happens after a restart.
 
 They are the right choice for unit tests and for the `MultiJob.Worker` sample, which demonstrates
 scheduling and failure isolation rather than durability.
@@ -35,7 +39,7 @@ Core package.
 ## EF Core registration
 
 `UseEntityFrameworkCore` is called inside the `AddResilientWorkerKit` callback. It registers
-`AddDbContextFactory<WorkerKitDbContext>` plus the four EF Core stores as singletons, overriding the
+`AddDbContextFactory<WorkerKitDbContext>` plus the five EF Core stores as singletons, overriding the
 in-memory defaults.
 
 ### SQLite
@@ -83,7 +87,7 @@ across an `await` that spans job code.
 
 ## Schema
 
-Four tables. All string lengths below are the configured maximums; a column with no length is
+Five tables. All string lengths below are the configured maximums; a column with no length is
 mapped to the provider's unbounded text type.
 
 ### `WorkerKitExecutions`
@@ -161,6 +165,34 @@ Primary key: `Id`. Index: `(JobId, CreatedAtUtc)`.
 | `PayloadSummary` | string? | 2000 | masked summary — never the raw payload |
 | `CreatedAtUtc` | DateTime | | UTC |
 | `ReprocessedAtUtc` | DateTime? | | null = still pending |
+
+### `WorkerKitPendingOccurrences`
+
+Occurrences planned durably rather than derived from a schedule. Today that means follow-up
+retries (`RetryLater`); the shape is deliberately general so runtime-created triggers can reuse
+the table without a schema change.
+
+Primary key: `Id`. Index: `(JobId, DueAtUtc)` — the scheduler asks for "the earliest pending
+occurrence for this job" on every loop iteration.
+
+| Column | Type | Max length | Notes |
+|---|---|---|---|
+| `Id` | string | 64 | **PK** |
+| `JobId` | string | 200 | required |
+| `DueAtUtc` | DateTime | | UTC; when it becomes runnable |
+| `IdentityToken` | string | 300 | required; e.g. `at:2026-08-15T07:00:00Z+followup-1` |
+| `Source` | string | 32 | required; `follow-up-retry` |
+| `OriginScheduledExecutionId` | string? | 300 | the occurrence being retried |
+| `FollowUpOrdinal` | int | | 1-based |
+| `PayloadJson` | string? | | unused by follow-up retries; reserved |
+| `CreatedAtUtc` | DateTime | | UTC |
+
+**Claiming is a delete.** `TryClaimAsync` issues `ExecuteDelete` and treats "rows affected > 0"
+as having won the occurrence, so the database picks the single winner. That keeps the semantics
+correct if a second host instance is ever added, ahead of full distributed locking.
+
+Rows are removed when claimed, so the table stays small: it holds only occurrences that are
+waiting, never history. A follow-up that ran leaves its trace in `WorkerKitExecutions` instead.
 
 ## Why timestamps are `DateTime`, not `DateTimeOffset`
 
@@ -328,7 +360,7 @@ public sealed class AppDbContext : DbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
-        modelBuilder.ApplyWorkerKitModel();   // the four WorkerKit* tables
+        modelBuilder.ApplyWorkerKitModel();   // the five WorkerKit* tables
     }
 }
 ```
@@ -373,13 +405,14 @@ Nothing in the kit deletes rows. Plan retention yourself.
 | `WorkerKitIdempotencyRecords` | one row per distinct key | nothing (`ExpiresAtUtc` marks a row *inert*, not deleted) |
 | `WorkerKitDeadLetters` | one row per dead-lettered item or exhausted execution | nothing |
 | `WorkerKitCheckpoints` | one row per job | the number of registered jobs |
+| `WorkerKitPendingOccurrences` | one row per waiting follow-up | self-limiting: rows are deleted when claimed |
 
 Order of magnitude: a job on a one-minute schedule writes 1,440 execution rows a day, about 525,000
 a year. A sync job that acquires an idempotency key per item writes one row per item per version.
 
 Practical approach:
 
-- **Executions.** Keep enough history for the invariants that read it. The scheduler reads the 20
+- **Executions.** Keep enough history for the invariants that read it. The scheduler reads the 200
   most recent records per job at startup, and `ExistsForScheduledExecutionAsync` must still find the
   occurrence identity of the last calendar period — so a monthly job needs at least a few months of
   history to keep its "already ran this month" guarantee across a restart. Deleting rows younger

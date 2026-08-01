@@ -5,8 +5,8 @@
 [![CI](https://github.com/mFurkanHiz/ResilientWorkerKit/actions/workflows/ci.yml/badge.svg)](https://github.com/mFurkanHiz/ResilientWorkerKit/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET](https://img.shields.io/badge/.NET-10.0%20%7C%208.0-512BD4)](https://dotnet.microsoft.com/download/dotnet/10.0)
-[![Tests](https://img.shields.io/badge/tests-192%20%C3%97%202%20TFMs-brightgreen)](#tests)
-[![Coverage](https://img.shields.io/badge/coverage-85.4%25%20lines-brightgreen)](#tests)
+[![Tests](https://img.shields.io/badge/tests-221%20%C3%97%202%20TFMs-brightgreen)](#tests)
+[![Coverage](https://img.shields.io/badge/coverage-86.1%25%20lines-brightgreen)](#tests)
 
 ResilientWorkerKit is a lightweight reliability and execution layer for background jobs hosted in
 a .NET Generic Host. You write the business logic; the kit owns the loop, the failure boundary,
@@ -95,9 +95,12 @@ every one of them is addressed by a specific feature below.
   the next execution continues from there instead of starting over.
 - **Idempotency with an atomic gate.** Concurrent acquisitions of the same key are settled by the
   database (composite primary key + concurrency token), not by a hopeful `if (!exists)`.
-- **Nine schedule types, one host.** Interval, fixed delay, cron, daily, weekly, monthly (with
-  explicit short-month policies), last-day-of-month, one-time, run-on-startup — each with its own
-  time zone, timeout, retry, misfire and overlap policy.
+- **Ten schedule types, one host.** Interval, fixed delay, cron, daily, weekly, monthly (with
+  explicit short-month policies), last-day-of-month, one-time, explicit planned times,
+  run-on-startup — each with its own time zone, timeout, retry, misfire and overlap policy.
+- **Planned actions that eventually happen.** Schedule a sale opening for 15 August at 10:00, and
+  if it fails, have it retried five minutes later — *durably*, so the retry survives a deployment
+  in between. In-memory retry cannot promise that; a queued follow-up can.
 - **Restart-safe calendar identity.** A monthly occurrence carries the identity
   `monthly-billing:2026-08`; once it has completed, no restart, misfire recovery or DST quirk can
   run it a second time.
@@ -143,8 +146,8 @@ Details in [docs/architecture.md](docs/architecture.md).
 
 ## Getting started
 
-> **Not on NuGet yet.** v1.0.0 is published here as source and as signed-by-CI package artifacts
-> attached to the release. Clone the repository, or reference the projects directly:
+> **Not on NuGet yet.** Each release publishes source plus CI-equivalent package artifacts.
+> Clone the repository, or reference the projects directly:
 >
 > ```bash
 > git clone https://github.com/mFurkanHiz/ResilientWorkerKit.git
@@ -203,6 +206,28 @@ services.AddResilientWorkerKit(kit =>
 ```
 
 If `reservation-sync` starts failing every run, the other five keep their schedules exactly.
+
+### A planned action that must eventually happen
+
+```csharp
+kit.AddJob<OpenTicketSaleJob>("ticket-sale-open", job => job
+    // 10:00 Istanbul on 15 August — and again on the 16th
+    .AtLocalTimes("Europe/Istanbul",
+        new DateTime(2026, 8, 15, 10, 0, 0),
+        new DateTime(2026, 8, 16, 10, 0, 0))
+
+    // Fast, in-memory: ride out a momentary upstream hiccup
+    .WithRetry(r => { r.MaxRetries = 2; r.BaseDelay = TimeSpan.FromSeconds(5); })
+
+    // Slow, durable: if it still failed, try again every 5 minutes, up to 3 times —
+    // and keep that promise across a restart
+    .RetryLater(maxAttempts: 3, delay: TimeSpan.FromMinutes(5)));
+```
+
+`WithRetry` retries *inside* one execution: seconds, in memory, lost if the process restarts.
+`RetryLater` queues a *new* execution in a durable store, so a redeploy during the waiting window
+does not lose it. Use `Repeating(startAt, every, count)` for "three times on the 15th, four hours
+apart". [docs/failure-handling.md](docs/failure-handling.md#retry-now-vs-retry-later)
 
 ### Checkpoint and resume
 
@@ -343,17 +368,17 @@ dotnet test
 
 | Suite | Count | Scope |
 |---|---|---|
-| Unit | 179 | Schedule math (DST gaps, ambiguous hours, leap years, invalid-day policies), retry backoff and jitter bounds, failure classification, runner execution/retry/checkpoint/idempotency, misfire and overlap policies, manual triggers, graceful shutdown, in-memory stores, health evaluation, HTTP handlers and masking, registration validation |
-| Integration | 13 | Real Generic Host, real DI scopes, real SQLite file database that survives restarts, real HTTP server: the end-to-end failure→restart→resume scenario, `Retry-After` and permanent-400 handling, abandoned-execution recovery, monthly identity across restarts, the EF Core idempotency race, health checks through the real pipeline |
+| Unit | 205 | Schedule math (DST gaps, ambiguous hours, leap years, invalid-day policies), retry backoff and jitter bounds, failure classification, runner execution/retry/checkpoint/idempotency, misfire and overlap policies, manual triggers, graceful shutdown, in-memory stores, health evaluation, HTTP handlers and masking, registration validation |
+| Integration | 16 | Real Generic Host, real DI scopes, real SQLite file database that survives restarts, real HTTP server: the end-to-end failure→restart→resume scenario, `Retry-After` and permanent-400 handling, abandoned-execution recovery, monthly identity across restarts, the EF Core idempotency race, health checks through the real pipeline |
 
-Both suites run against **both target frameworks** — 384 test executions per CI leg, on Linux and
+Both suites run against **both target frameworks** — 442 test executions per CI leg, on Linux and
 Windows. A supported target framework that never executes a test is a claim, not a guarantee.
 
 Schedule and engine tests run on `FakeTimeProvider`, so a month of scheduling is verified in
 milliseconds — the whole suite finishes in about ten seconds.
 
 Measured coverage across the five library assemblies, as reported by CI on the last run
-(coverlet, Release build): **85.4% lines, 78.3% branches, 93.9% methods**. The uncovered remainder
+(coverlet, Release build): **86.1% lines, 79% branches, 94.1% methods**. The uncovered remainder
 is mostly log-message plumbing and defensive store-failure paths. The full HTML report is
 published as a CI artifact on every run.
 

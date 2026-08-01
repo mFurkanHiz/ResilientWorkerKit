@@ -85,9 +85,13 @@ services.AddResilientWorkerKit(kit =>
   `DailyAt(TimeOnly, string timeZone)`, `WeeklyAt(DayOfWeek[], TimeOnly, string timeZone)`,
   `MonthlyOnDay(int day, TimeOnly, string timeZone, MonthlyInvalidDayPolicy)`,
   `OnLastDayOfMonth(TimeOnly, string timeZone)`, `OnceAt(DateTimeOffset)`,
+  `AtTimes(params DateTimeOffset[])`, `AtLocalTimes(string timeZone, params DateTime[])`,
+  `Repeating(DateTimeOffset startAt, TimeSpan every, int count)`,
   `WithSchedule(IJobSchedule)` (escape hatch), `RunOnStartup()`
 - Policies: `WithTimeout(TimeSpan)` (total), `WithRetry(Action<JobRetryOptions>)`,
-  `WithRetryCount(int)`, `PreventOverlappingExecutions(OverlapPolicy = SkipNewExecution)`,
+  `WithRetryCount(int)`, `RetryLater(int maxAttempts, TimeSpan delay)`,
+  `RetryLater(Action<FollowUpRetryOptions>)`,
+  `PreventOverlappingExecutions(OverlapPolicy = SkipNewExecution)`,
   `WithMisfirePolicy(MisfirePolicy, TimeSpan? tolerance = null)`,
   `WithTimeZone(string)` (default zone for schedule types that take none),
   `DeadLetterOnFailure()`, `Disabled()`, `WithDisplayName(string)`,
@@ -114,11 +118,12 @@ All durable state flows through five interfaces; in-memory implementations are r
 default and replaced by calling e.g. `kit.UseEntityFrameworkCore(...)`:
 
 ```csharp
-IJobCheckpointStore   // one JSON checkpoint per job
-IJobExecutionStore    // execution history + ScheduledExecutionId dedup + abandon recovery
-IIdempotencyStore     // atomic TryAcquire / MarkCompleted / MarkFailed with expiry
-IDeadLetterStore      // execution- and item-level dead letters
-IJobLockProvider      // per-job overlap lock (in-process default; distributed = Phase 2)
+IJobCheckpointStore     // one JSON checkpoint per job
+IJobExecutionStore      // execution history + ScheduledExecutionId dedup + abandon recovery
+IIdempotencyStore       // atomic TryAcquire / MarkCompleted / MarkFailed with expiry
+IDeadLetterStore        // execution- and item-level dead letters
+IPendingOccurrenceStore // durably planned occurrences (follow-up retries)
+IJobLockProvider        // per-job overlap lock (in-process default; distributed = Phase 2)
 ```
 
 Other extension points:

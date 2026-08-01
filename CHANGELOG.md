@@ -5,6 +5,49 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html): from 1.0 onwards, breaking changes
 require a major version and additive capabilities a minor one.
 
+## [1.1.0] — 2026-08-02
+
+Planned actions: schedule something for a specific future moment, and make sure it eventually
+happens even if the first attempt fails and the process is redeployed in between.
+
+### Added
+
+**Explicit-time schedules**
+- `AtTimes(params DateTimeOffset[])` and `AtTimes(IEnumerable<DateTimeOffset>)` — fire at an
+  explicit set of instants rather than a repeating pattern.
+- `AtLocalTimes(timeZone, params DateTime[])` — the same, in wall-clock time, resolved with the
+  existing daylight-saving rules.
+- `Repeating(startAt, every, count)` — sugar for "three runs on the 15th, four hours apart".
+- Each instant is its own occurrence with identity `at:<instant>`, so a completed one is never
+  repeated after a restart. Default misfire policy is `RunImmediatelyOnce`.
+
+**Durable follow-up retries**
+- `RetryLater(maxAttempts, delay)` and `RetryLater(Action<FollowUpRetryOptions>)` queue a new
+  execution after one has failed for good. Unlike `WithRetry`, whose attempts live in memory
+  inside a single execution, a follow-up is persisted and runs even if the process that queued it
+  is gone. Supports even spacing or exponential backoff with a ceiling.
+- Permanent and misconfigured failures do not queue a follow-up unless
+  `RetryPermanentFailures` is set.
+- New store interface `IPendingOccurrenceStore` with in-memory and EF Core implementations, and a
+  new table `WorkerKitPendingOccurrences`. Claiming an occurrence is a delete, so the database
+  picks the single winner. The record shape is deliberately general (`Source`, `PayloadJson`) so
+  runtime-created triggers can reuse it later without a schema change.
+- New metric `workerkit.job.follow_ups` and log events 1031–1034.
+
+### Fixed
+
+- A planned schedule whose instant had already passed was never discovered on a first start
+  against an empty store: the engine only scheduled forward from "now", so a host that was down
+  at the planned minute skipped the action silently instead of letting the misfire policy decide.
+  `IJobSchedule` gained `DiscoverPastOccurrencesOnFirstStart` (a default interface member, so
+  existing implementations are unaffected); one-time and explicit-time schedules return true,
+  recurring schedules keep looking forward only.
+
+### Upgrading
+
+EF Core users need a migration for the new `WorkerKitPendingOccurrences` table; see
+[docs/persistence.md](docs/persistence.md). Everything else is additive and source-compatible.
+
 ## [1.0.0] — 2026-08-01
 
 First public release. The public API is fixed under semantic versioning; the reliability
@@ -86,4 +129,5 @@ additive (`IJobLockProvider` is already the seam) and is planned for a 1.x relea
 
 See [docs/limitations.md](docs/limitations.md) for the full list.
 
+[1.1.0]: https://github.com/mFurkanHiz/ResilientWorkerKit/releases/tag/v1.1.0
 [1.0.0]: https://github.com/mFurkanHiz/ResilientWorkerKit/releases/tag/v1.0.0

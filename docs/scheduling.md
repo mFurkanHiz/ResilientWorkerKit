@@ -186,12 +186,61 @@ misfire — and its default misfire policy is `RunImmediatelyOnce`, so it runs o
 identity (`once:<instant>`) makes that safe across restarts: once an execution for that identity
 has completed, it is never started again.
 
+## Explicit times — planned one-off actions
+
+For actions whose times are known in advance and are not a repeating pattern: a sale opening, a
+campaign start, a migration cut-over.
+
+```csharp
+// Exact instants
+job.AtTimes(
+    DateTimeOffset.Parse("2026-08-15T07:00:00Z"),
+    DateTimeOffset.Parse("2026-08-15T11:00:00Z"),
+    DateTimeOffset.Parse("2026-08-16T07:00:00Z"));
+
+// Wall-clock times in a zone (10:00 Istanbul on two consecutive days)
+job.AtLocalTimes("Europe/Istanbul",
+    new DateTime(2026, 8, 15, 10, 0, 0),
+    new DateTime(2026, 8, 16, 10, 0, 0));
+
+// Three runs on the 15th, four hours apart
+job.Repeating(DateTimeOffset.Parse("2026-08-15T07:00:00Z"), every: TimeSpan.FromHours(4), count: 3);
+```
+
+Instants are sorted and de-duplicated; the order you pass them in does not matter. Each one is a
+separate occurrence with identity `at:<instant>`, so a completed instant is never repeated after a
+restart, and the schedule returns `null` once the last one has been handled.
+
+`AtLocalTimes` resolves through the same daylight-saving rules as every other calendar schedule
+(see [Local → UTC conversion and DST](#local--utc-conversion-and-dst)).
+
+Like one-time, the default misfire policy is `RunImmediatelyOnce`: a planned action is scheduled
+because it must happen, so being down at that minute should not silently drop it.
+
+### Looking backwards on the first start
+
+A schedule declares whether a host starting with **no execution history** should look for
+occurrences already in the past:
+
+| Schedule | Looks back on first start | Why |
+|---|---|---|
+| `AtTimes` / `AtLocalTimes` / `Repeating` / `OnceAt` | **Yes** | The occurrence exists precisely so it happens; the misfire policy then decides |
+| Interval, fixed delay, cron, daily, weekly, monthly, last-day | No | A fresh deployment of an hourly job must not try to replay every past hour |
+
+Custom schedules opt in by overriding `DiscoverPastOccurrencesOnFirstStart`, a default interface
+member that returns `false`.
+
+> Once a job has execution history, the anchor comes from that history and this flag no longer
+> applies — it only governs the very first start against an empty store.
+
 ## Custom schedules
 
 `WithSchedule(IJobSchedule)` accepts any implementation. Return occurrences strictly after
 `afterUtc`, produce a deterministic `IdentityToken` (the engine's duplicate suppression is only as
 good as that token), and keep the method free of wall-clock access. Custom schedules are not
-treated as calendar schedules by validation, so `RescheduleFromNow` is allowed for them.
+treated as calendar schedules by validation, so `RescheduleFromNow` is allowed for them. Override
+`DiscoverPastOccurrencesOnFirstStart` if your schedule represents planned instants rather than a
+recurring pattern.
 
 ## Run on startup
 

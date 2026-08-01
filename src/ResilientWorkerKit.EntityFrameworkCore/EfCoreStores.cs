@@ -425,6 +425,94 @@ public sealed class EfCoreIdempotencyStore : IIdempotencyStore
     }
 }
 
+/// <summary>
+/// EF Core pending-occurrence store. This is the store that gives follow-up retries their whole
+/// point: a retry queued here outlives the process that queued it.
+/// </summary>
+public sealed class EfCorePendingOccurrenceStore : IPendingOccurrenceStore
+{
+    private readonly IDbContextFactory<WorkerKitDbContext> _factory;
+
+    /// <summary>Creates the store.</summary>
+    public EfCorePendingOccurrenceStore(IDbContextFactory<WorkerKitDbContext> factory) => _factory = factory;
+
+    /// <inheritdoc />
+    public async Task AddAsync(PendingOccurrence occurrence, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(occurrence);
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            db.PendingOccurrences.Add(new JobPendingOccurrenceEntity
+            {
+                Id = occurrence.Id,
+                JobId = occurrence.JobId,
+                DueAtUtc = occurrence.DueAtUtc.UtcDateTime,
+                IdentityToken = occurrence.IdentityToken,
+                Source = occurrence.Source,
+                OriginScheduledExecutionId = occurrence.OriginScheduledExecutionId,
+                FollowUpOrdinal = occurrence.FollowUpOrdinal,
+                PayloadJson = occurrence.PayloadJson,
+                CreatedAtUtc = occurrence.CreatedAtUtc.UtcDateTime,
+            });
+            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<PendingOccurrence?> GetNextAsync(string jobId, CancellationToken cancellationToken = default)
+    {
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            var entity = await db.PendingOccurrences.AsNoTracking()
+                .Where(p => p.JobId == jobId)
+                .OrderBy(p => p.DueAtUtc)
+                .ThenBy(p => p.Id)
+                .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+
+            return entity is null ? null : new PendingOccurrence
+            {
+                Id = entity.Id,
+                JobId = entity.JobId,
+                DueAtUtc = EfCoreJobExecutionStore.Utc(entity.DueAtUtc),
+                IdentityToken = entity.IdentityToken,
+                Source = entity.Source,
+                OriginScheduledExecutionId = entity.OriginScheduledExecutionId,
+                FollowUpOrdinal = entity.FollowUpOrdinal,
+                PayloadJson = entity.PayloadJson,
+                CreatedAtUtc = EfCoreJobExecutionStore.Utc(entity.CreatedAtUtc),
+            };
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> TryClaimAsync(string id, CancellationToken cancellationToken = default)
+    {
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            // The delete is the claim: the database decides the single winner, so this stays
+            // correct if a second host instance is ever added.
+            var deleted = await db.PendingOccurrences
+                .Where(p => p.Id == id)
+                .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+            return deleted > 0;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<int> CountAsync(string jobId, CancellationToken cancellationToken = default)
+    {
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            return await db.PendingOccurrences.AsNoTracking()
+                .CountAsync(p => p.JobId == jobId, cancellationToken).ConfigureAwait(false);
+        }
+    }
+}
+
 /// <summary>EF Core dead-letter store.</summary>
 public sealed class EfCoreDeadLetterStore : IDeadLetterStore
 {

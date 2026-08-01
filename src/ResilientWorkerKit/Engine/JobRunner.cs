@@ -5,7 +5,11 @@ using Microsoft.Extensions.Logging;
 namespace ResilientWorkerKit.Engine;
 
 /// <summary>Result of one execution run (all attempts).</summary>
-internal sealed record JobRunResult(string ExecutionId, JobExecutionStatus Status, DateTimeOffset CompletedAtUtc);
+internal sealed record JobRunResult(
+    string ExecutionId,
+    JobExecutionStatus Status,
+    DateTimeOffset CompletedAtUtc,
+    JobFailureKind? FailureKind = null);
 
 /// <summary>
 /// Executes one job occurrence: DI scope per attempt, retry with failure classification,
@@ -338,7 +342,7 @@ internal sealed class JobRunner
             activity?.SetStatus(ActivityStatusCode.Error, record.ErrorMessage);
         }
 
-        return new JobRunResult(executionId, finalStatus, completedAt);
+        return new JobRunResult(executionId, finalStatus, completedAt, finalKind);
     }
 
     private JobExecutionContext CreateContext(

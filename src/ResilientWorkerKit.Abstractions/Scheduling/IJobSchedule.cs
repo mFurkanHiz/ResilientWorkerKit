@@ -19,4 +19,17 @@ public interface IJobSchedule
 
     /// <summary>Human-readable description used in logs and health output (e.g. "every 00:05:00").</summary>
     string Describe();
+
+    /// <summary>
+    /// Whether a host starting with no execution history should look for occurrences that are
+    /// already in the past, instead of only scheduling forward from now.
+    /// <para>
+    /// Recurring schedules leave this <see langword="false"/>: a new deployment of an hourly job
+    /// should not try to replay every hour since the epoch. Finite, planned schedules — a single
+    /// instant, an explicit list of instants — return <see langword="true"/>, because those
+    /// occurrences exist precisely so they happen, and a host that was down at that minute must
+    /// still see them and apply its misfire policy.
+    /// </para>
+    /// </summary>
+    bool DiscoverPastOccurrencesOnFirstStart => false;
 }

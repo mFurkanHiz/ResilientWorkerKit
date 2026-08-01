@@ -87,6 +87,9 @@ internal static class StoreAccess
 
     public static IDeadLetterStore DeadLetters(this WorkerHost host) => host.GetRequiredService<IDeadLetterStore>();
 
+    public static IPendingOccurrenceStore PendingOccurrences(this WorkerHost host)
+        => host.GetRequiredService<IPendingOccurrenceStore>();
+
     public static async Task<IReadOnlyList<JobExecutionRecord>> HistoryAsync(this WorkerHost host, string jobId)
         => await host.Executions().GetRecentAsync(jobId, 200);
 

@@ -116,6 +116,37 @@ public sealed class JobIdempotencyEntity
     public int Version { get; set; }
 }
 
+/// <summary>Relational row for one durably planned occurrence (today: a follow-up retry).</summary>
+public sealed class JobPendingOccurrenceEntity
+{
+    /// <summary>Primary key.</summary>
+    public string Id { get; set; } = null!;
+
+    /// <summary>The job to run.</summary>
+    public string JobId { get; set; } = null!;
+
+    /// <summary>When the occurrence becomes due (UTC).</summary>
+    public DateTime DueAtUtc { get; set; }
+
+    /// <summary>Occurrence identity token.</summary>
+    public string IdentityToken { get; set; } = null!;
+
+    /// <summary>What planned it (<c>follow-up-retry</c>).</summary>
+    public string Source { get; set; } = null!;
+
+    /// <summary>The occurrence being followed up on.</summary>
+    public string? OriginScheduledExecutionId { get; set; }
+
+    /// <summary>1-based follow-up ordinal.</summary>
+    public int FollowUpOrdinal { get; set; }
+
+    /// <summary>Optional payload; unused by follow-up retries.</summary>
+    public string? PayloadJson { get; set; }
+
+    /// <summary>Creation time (UTC).</summary>
+    public DateTime CreatedAtUtc { get; set; }
+}
+
 /// <summary>Relational row for one dead-letter record.</summary>
 public sealed class JobDeadLetterEntity
 {

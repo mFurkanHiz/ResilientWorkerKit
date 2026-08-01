@@ -31,5 +31,8 @@ public sealed class OneTimeSchedule : IJobSchedule
     }
 
     /// <inheritdoc />
+    public bool DiscoverPastOccurrencesOnFirstStart => true;
+
+    /// <inheritdoc />
     public string Describe() => $"once at {RunAtUtc:u}";
 }

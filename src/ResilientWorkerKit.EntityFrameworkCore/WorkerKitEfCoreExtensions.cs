@@ -42,6 +42,7 @@ public static class WorkerKitEfCoreExtensions
         builder.Services.AddSingleton<IJobExecutionStore, EfCoreJobExecutionStore>();
         builder.Services.AddSingleton<IIdempotencyStore, EfCoreIdempotencyStore>();
         builder.Services.AddSingleton<IDeadLetterStore, EfCoreDeadLetterStore>();
+        builder.Services.AddSingleton<IPendingOccurrenceStore, EfCorePendingOccurrenceStore>();
 
         if (efOptions.AutoCreateSchema)
         {

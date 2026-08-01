@@ -9,6 +9,15 @@ namespace ResilientWorkerKit.Engine;
 internal sealed record ManualTriggerRequest(string ExecutionId, TaskCompletionSource<string> Accepted);
 
 /// <summary>
+/// The next thing the loop intends to run: either an occurrence derived from the job's schedule,
+/// or one taken from the durable pending queue (a follow-up retry).
+/// </summary>
+internal sealed record NextWork(
+    JobScheduleOccurrence Occurrence,
+    string Trigger,
+    PendingOccurrence? Pending = null);
+
+/// <summary>
 /// The per-job scheduler loop: computes occurrences, applies misfire and overlap policies,
 /// prevents duplicate occurrence execution, and hands occurrences to the <see cref="JobRunner"/>.
 /// One loop failure can never affect another loop or the host (last-resort catch).
@@ -20,11 +29,13 @@ internal sealed class JobScheduleLoop
     private const string TriggerStartup = "startup";
     private const string TriggerManual = "manual";
     private const string TriggerQueuedOverlap = "queued-overlap";
+    private const string TriggerFollowUp = "follow-up";
     private static readonly TimeSpan MaxDelayChunk = TimeSpan.FromDays(20);
 
     private readonly JobDefinition _def;
     private readonly JobRunner _runner;
     private readonly IJobExecutionStore _executionStore;
+    private readonly IPendingOccurrenceStore _pendingStore;
     private readonly JobHealthTracker _health;
     private readonly WorkerKitMetrics _metrics;
     private readonly TimeProvider _time;
@@ -34,7 +45,7 @@ internal sealed class JobScheduleLoop
 
     private readonly List<Task<JobRunResult?>> _runs = new();
     private Task<JobRunResult?>? _currentRun;
-    private (JobScheduleOccurrence Occurrence, string Trigger)? _queued;
+    private NextWork? _queued;
     private DateTimeOffset? _anchorUtc;
     private DateTimeOffset? _lastCompletedUtc;
     private bool _scheduleExhaustedLogged;
@@ -44,6 +55,7 @@ internal sealed class JobScheduleLoop
         JobDefinition definition,
         JobRunner runner,
         IJobExecutionStore executionStore,
+        IPendingOccurrenceStore pendingStore,
         JobHealthTracker health,
         WorkerKitMetrics metrics,
         TimeProvider time,
@@ -52,6 +64,7 @@ internal sealed class JobScheduleLoop
         _def = definition;
         _runner = runner;
         _executionStore = executionStore;
+        _pendingStore = pendingStore;
         _health = health;
         _metrics = metrics;
         _time = time;
@@ -105,14 +118,15 @@ internal sealed class JobScheduleLoop
                 now,
                 LocalTimeConverter.ToLocal(now, _def.TimeZone),
                 "startup:" + now.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture));
-            StartRun(occurrence, TriggerStartup, presetExecutionId: null, stoppingToken);
+            StartRun(occurrence, TriggerStartup, presetExecutionId: null, followUpOrdinal: 0,
+                originScheduledExecutionId: null, stoppingToken);
         }
 
         while (!stoppingToken.IsCancellationRequested)
         {
             HarvestFinishedRuns();
 
-            var next = await ComputeNextOccurrenceAsync(stoppingToken).ConfigureAwait(false);
+            var next = await ComputeNextWorkAsync(stoppingToken).ConfigureAwait(false);
             _health.OnNextOccurrence(_def.JobId, next?.Occurrence.ScheduledAtUtc);
             if (next is { } n && n.Occurrence.ScheduledAtUtc > _time.GetUtcNow())
             {
@@ -170,7 +184,7 @@ internal sealed class JobScheduleLoop
                 if (_queued is { } queued)
                 {
                     _queued = null;
-                    await FireOccurrenceAsync(queued.Occurrence, TriggerQueuedOverlap, stoppingToken).ConfigureAwait(false);
+                    await FireOccurrenceAsync(queued with { Trigger = TriggerQueuedOverlap }, stoppingToken).ConfigureAwait(false);
                 }
 
                 continue;
@@ -184,7 +198,7 @@ internal sealed class JobScheduleLoop
 
             if (next is { } due)
             {
-                await FireOccurrenceAsync(due.Occurrence, due.Trigger, stoppingToken).ConfigureAwait(false);
+                await FireOccurrenceAsync(due, stoppingToken).ConfigureAwait(false);
             }
         }
 
@@ -257,7 +271,53 @@ internal sealed class JobScheduleLoop
         }
     }
 
-    private async Task<(JobScheduleOccurrence Occurrence, string Trigger)?> ComputeNextOccurrenceAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// The next work item: the earlier of the schedule's next occurrence and the durable pending
+    /// queue's head. Follow-up retries therefore compete with the schedule on equal terms, and a
+    /// follow-up queued before a restart is picked up by the new process.
+    /// </summary>
+    private async Task<NextWork?> ComputeNextWorkAsync(CancellationToken cancellationToken)
+    {
+        var scheduled = await ComputeNextOccurrenceAsync(cancellationToken).ConfigureAwait(false);
+        var pending = await GetNextPendingAsync(cancellationToken).ConfigureAwait(false);
+
+        if (pending is null)
+        {
+            return scheduled;
+        }
+
+        if (scheduled is not null && scheduled.Occurrence.ScheduledAtUtc <= pending.DueAtUtc)
+        {
+            return scheduled;
+        }
+
+        return new NextWork(
+            new JobScheduleOccurrence(
+                pending.DueAtUtc,
+                LocalTimeConverter.ToLocal(pending.DueAtUtc, _def.TimeZone),
+                pending.IdentityToken),
+            TriggerFollowUp,
+            pending);
+    }
+
+    private async Task<PendingOccurrence?> GetNextPendingAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _pendingStore.GetNextAsync(_def.JobId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            JobLog.StoreOperationFailed(_logger, ex, "GetNextPendingOccurrence");
+            return null;
+        }
+    }
+
+    private async Task<NextWork?> ComputeNextOccurrenceAsync(CancellationToken cancellationToken)
     {
         if (_def.Schedule is null)
         {
@@ -266,7 +326,8 @@ internal sealed class JobScheduleLoop
 
         var now = _time.GetUtcNow();
         var context = new ScheduleCalculationContext(now, _lastCompletedUtc, _def.TimeZone);
-        var after = _anchorUtc ?? (_def.Schedule is OneTimeSchedule ? DateTimeOffset.MinValue : now);
+        var after = _anchorUtc
+            ?? (_def.Schedule.DiscoverPastOccurrencesOnFirstStart ? DateTimeOffset.MinValue : now);
 
         var occurrence = _def.Schedule.GetOccurrenceAfter(after, context);
         if (occurrence is null)
@@ -282,7 +343,7 @@ internal sealed class JobScheduleLoop
 
         if (occurrence.ScheduledAtUtc > now)
         {
-            return (occurrence, TriggerSchedule);
+            return new NextWork(occurrence, TriggerSchedule);
         }
 
         // One or more occurrences were missed; find the most recent missed one.
@@ -313,7 +374,7 @@ internal sealed class JobScheduleLoop
             case MisfirePolicy.RescheduleFromNow:
                 _anchorUtc = now;
                 var reanchored = _def.Schedule.GetOccurrenceAfter(now, context);
-                return reanchored is null ? null : (reanchored, TriggerSchedule);
+                return reanchored is null ? null : new NextWork(reanchored, TriggerSchedule);
 
             case MisfirePolicy.Skip:
             case MisfirePolicy.RunIfWithinTolerance:
@@ -321,11 +382,11 @@ internal sealed class JobScheduleLoop
                 _anchorUtc = lastMissed.ScheduledAtUtc;
                 JobLog.MisfireSkipped(_logger, lastMissed.ScheduledAtUtc);
                 var upcoming = _def.Schedule.GetOccurrenceAfter(lastMissed.ScheduledAtUtc, context);
-                return upcoming is null ? null : (upcoming, TriggerSchedule);
+                return upcoming is null ? null : new NextWork(upcoming, TriggerSchedule);
         }
     }
 
-    private async Task<(JobScheduleOccurrence Occurrence, string Trigger)?> RecoverMissedOccurrenceAsync(
+    private async Task<NextWork?> RecoverMissedOccurrenceAsync(
         JobScheduleOccurrence missed, CancellationToken cancellationToken)
     {
         // Restart safety: never create the same missed occurrence twice. Any execution record
@@ -354,16 +415,51 @@ internal sealed class JobScheduleLoop
             JobLog.MisfireSkipped(_logger, missed.ScheduledAtUtc);
             var context = new ScheduleCalculationContext(_time.GetUtcNow(), _lastCompletedUtc, _def.TimeZone);
             var upcoming = _def.Schedule!.GetOccurrenceAfter(missed.ScheduledAtUtc, context);
-            return upcoming is null ? null : (upcoming, TriggerSchedule);
+            return upcoming is null ? null : new NextWork(upcoming, TriggerSchedule);
         }
 
-        return (missed, TriggerMisfire);
+        return new NextWork(missed, TriggerMisfire);
     }
 
-    private async Task FireOccurrenceAsync(JobScheduleOccurrence occurrence, string trigger, CancellationToken stoppingToken)
+    private async Task FireOccurrenceAsync(NextWork work, CancellationToken stoppingToken)
     {
-        _anchorUtc = occurrence.ScheduledAtUtc;
+        var occurrence = work.Occurrence;
+        var trigger = work.Trigger;
+
+        // A follow-up occurrence only advances the pending queue, never the schedule phase:
+        // a retry must not shift when the next scheduled occurrence is due.
+        if (work.Pending is null)
+        {
+            _anchorUtc = occurrence.ScheduledAtUtc;
+        }
+
         _scheduleExhaustedLogged = false;
+
+        if (work.Pending is { } pending)
+        {
+            // Claiming is the atomic gate: whoever removes the row owns the run.
+            bool claimed;
+            try
+            {
+                claimed = await _pendingStore.TryClaimAsync(pending.Id, stoppingToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                JobLog.StoreOperationFailed(_logger, ex, "ClaimPendingOccurrence");
+                return;
+            }
+
+            if (!claimed)
+            {
+                return;
+            }
+
+            JobLog.FollowUpStarting(_logger, pending.FollowUpOrdinal, pending.OriginScheduledExecutionId);
+        }
 
         // Identity dedup: a completed occurrence never runs again (monthly identity, one-time
         // schedules, DST fall-back double-fire protection).
@@ -399,7 +495,8 @@ internal sealed class JobScheduleLoop
         {
             if (_def.OverlapPolicy == OverlapPolicy.QueueSingleExecution && _queued is null)
             {
-                _queued = (occurrence, trigger);
+                // The pending row is already claimed, so the queued copy carries no claim.
+                _queued = work with { Pending = null };
                 JobLog.OverlappingExecutionQueued(_logger, occurrence.ScheduledAtUtc);
             }
             else
@@ -412,12 +509,20 @@ internal sealed class JobScheduleLoop
             return;
         }
 
-        StartRun(occurrence, trigger, presetExecutionId: null, stoppingToken);
+        StartRun(occurrence, trigger, presetExecutionId: null, work.Pending?.FollowUpOrdinal ?? 0,
+            work.Pending?.OriginScheduledExecutionId, stoppingToken);
     }
 
-    private void StartRun(JobScheduleOccurrence occurrence, string trigger, string? presetExecutionId, CancellationToken stoppingToken)
+    private void StartRun(
+        JobScheduleOccurrence occurrence,
+        string trigger,
+        string? presetExecutionId,
+        int followUpOrdinal,
+        string? originScheduledExecutionId,
+        CancellationToken stoppingToken)
     {
-        var runTask = _runner.RunAsync(_def, occurrence, trigger, presetExecutionId, _logger, stoppingToken);
+        var runTask = RunAndPlanFollowUpAsync(
+            occurrence, trigger, presetExecutionId, followUpOrdinal, originScheduledExecutionId, stoppingToken);
         lock (_runs)
         {
             _runs.Add(runTask);
@@ -426,6 +531,88 @@ internal sealed class JobScheduleLoop
         if (_def.OverlapPolicy != OverlapPolicy.AllowConcurrentExecutions)
         {
             _currentRun = runTask;
+        }
+    }
+
+    /// <summary>
+    /// Runs the occurrence and, when it fails and the job has a follow-up retry policy, queues
+    /// the next attempt durably. Queuing happens here rather than in the runner because it is a
+    /// scheduling decision, and because only the loop knows which follow-up this run is.
+    /// </summary>
+    private async Task<JobRunResult?> RunAndPlanFollowUpAsync(
+        JobScheduleOccurrence occurrence,
+        string trigger,
+        string? presetExecutionId,
+        int followUpOrdinal,
+        string? originScheduledExecutionId,
+        CancellationToken stoppingToken)
+    {
+        var result = await _runner
+            .RunAsync(_def, occurrence, trigger, presetExecutionId, _logger, stoppingToken)
+            .ConfigureAwait(false);
+
+        if (result is not null)
+        {
+            await PlanFollowUpIfNeededAsync(result, occurrence, followUpOrdinal, originScheduledExecutionId)
+                .ConfigureAwait(false);
+        }
+
+        return result;
+    }
+
+    private async Task PlanFollowUpIfNeededAsync(
+        JobRunResult result,
+        JobScheduleOccurrence occurrence,
+        int followUpOrdinal,
+        string? originScheduledExecutionId)
+    {
+        if (_def.FollowUpRetry is not { } policy || result.Status != JobExecutionStatus.Failed)
+        {
+            return;
+        }
+
+        // A deterministic failure normally repeats; retrying it just burns the window unless the
+        // job opts in.
+        if (!policy.RetryPermanentFailures
+            && result.FailureKind is JobFailureKind.Permanent or JobFailureKind.Misconfigured)
+        {
+            JobLog.FollowUpSkippedForPermanentFailure(_logger, result.FailureKind.Value);
+            return;
+        }
+
+        var nextOrdinal = followUpOrdinal + 1;
+        var origin = originScheduledExecutionId ?? $"{_def.JobId}:{occurrence.IdentityToken}";
+
+        if (nextOrdinal > policy.MaxAttempts)
+        {
+            JobLog.FollowUpRetriesExhausted(_logger, policy.MaxAttempts, origin);
+            return;
+        }
+
+        var delay = policy.DelayFor(nextOrdinal);
+        var dueAt = _time.GetUtcNow() + delay;
+
+        var pending = new PendingOccurrence
+        {
+            Id = Guid.NewGuid().ToString("n"),
+            JobId = _def.JobId,
+            DueAtUtc = dueAt,
+            IdentityToken = $"{occurrence.IdentityToken}+followup-{nextOrdinal}",
+            Source = PendingOccurrenceSources.FollowUpRetry,
+            OriginScheduledExecutionId = origin,
+            FollowUpOrdinal = nextOrdinal,
+            CreatedAtUtc = _time.GetUtcNow(),
+        };
+
+        try
+        {
+            await _pendingStore.AddAsync(pending, CancellationToken.None).ConfigureAwait(false);
+            JobLog.FollowUpQueued(_logger, nextOrdinal, policy.MaxAttempts, delay, dueAt);
+            _metrics.FollowUpQueued(_def.JobId);
+        }
+        catch (Exception ex)
+        {
+            JobLog.StoreOperationFailed(_logger, ex, "QueueFollowUpOccurrence");
         }
     }
 
@@ -483,7 +670,8 @@ internal sealed class JobScheduleLoop
                 LocalTimeConverter.ToLocal(now, _def.TimeZone),
                 "manual:" + request.ExecutionId);
 
-            StartRun(occurrence, TriggerManual, request.ExecutionId, stoppingToken);
+            StartRun(occurrence, TriggerManual, request.ExecutionId, followUpOrdinal: 0,
+                originScheduledExecutionId: null, stoppingToken);
             request.Accepted.TrySetResult(request.ExecutionId);
         }
     }

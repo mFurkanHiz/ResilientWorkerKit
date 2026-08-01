@@ -101,4 +101,16 @@ internal static partial class JobLog
 
     [LoggerMessage(1030, LogLevel.Error, "The execution pipeline for job {JobId} faulted instead of recording a result. This is a bug in ResilientWorkerKit — please report it. The scheduler continues")]
     public static partial void RunnerFaulted(ILogger logger, Exception exception, string jobId);
+
+    [LoggerMessage(1031, LogLevel.Warning, "Follow-up retry {FollowUpOrdinal}/{MaxAttempts} queued in {Delay}, due {DueAtUtc:o}. It is durable and survives a restart")]
+    public static partial void FollowUpQueued(ILogger logger, int followUpOrdinal, int maxAttempts, TimeSpan delay, DateTimeOffset dueAtUtc);
+
+    [LoggerMessage(1032, LogLevel.Information, "Follow-up retry {FollowUpOrdinal} starting for occurrence {OriginScheduledExecutionId}")]
+    public static partial void FollowUpStarting(ILogger logger, int followUpOrdinal, string? originScheduledExecutionId);
+
+    [LoggerMessage(1033, LogLevel.Error, "Follow-up retries exhausted after {MaxAttempts} attempt(s) for occurrence {OriginScheduledExecutionId}; it will not be retried again")]
+    public static partial void FollowUpRetriesExhausted(ILogger logger, int maxAttempts, string originScheduledExecutionId);
+
+    [LoggerMessage(1034, LogLevel.Information, "No follow-up retry queued: the failure was {FailureKind} and RetryPermanentFailures is disabled")]
+    public static partial void FollowUpSkippedForPermanentFailure(ILogger logger, JobFailureKind failureKind);
 }

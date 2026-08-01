@@ -27,6 +27,9 @@ public sealed class WorkerKitDbContext : DbContext
     /// <summary>Dead letters.</summary>
     public DbSet<JobDeadLetterEntity> DeadLetters => Set<JobDeadLetterEntity>();
 
+    /// <summary>Durably planned occurrences (follow-up retries).</summary>
+    public DbSet<JobPendingOccurrenceEntity> PendingOccurrences => Set<JobPendingOccurrenceEntity>();
+
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
         => modelBuilder.ApplyWorkerKitModel();
@@ -86,6 +89,20 @@ public static class WorkerKitModelBuilderExtensions
             entity.Property(e => e.ExecutionId).HasMaxLength(64);
             entity.Property(e => e.Version).IsConcurrencyToken();
             entity.HasIndex(e => e.ExpiresAtUtc);
+        });
+
+        modelBuilder.Entity<JobPendingOccurrenceEntity>(entity =>
+        {
+            entity.ToTable("WorkerKitPendingOccurrences");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).HasMaxLength(64);
+            entity.Property(e => e.JobId).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.IdentityToken).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.Source).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.OriginScheduledExecutionId).HasMaxLength(300);
+            // The scheduler asks for "the earliest pending occurrence for this job" on every
+            // loop iteration, so that lookup gets its own covering index.
+            entity.HasIndex(e => new { e.JobId, e.DueAtUtc });
         });
 
         modelBuilder.Entity<JobDeadLetterEntity>(entity =>

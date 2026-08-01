@@ -30,8 +30,14 @@ public sealed class JobDefinition
     /// <summary>Total execution timeout across all attempts; null = unlimited.</summary>
     public TimeSpan? Timeout { get; init; }
 
-    /// <summary>Retry policy for transient failures.</summary>
+    /// <summary>Retry policy for transient failures, applied as attempts inside one execution.</summary>
     public required JobRetryOptions Retry { get; init; }
+
+    /// <summary>
+    /// Optional durable retry policy applied after an execution has failed for good: the engine
+    /// queues a follow-up occurrence that survives a restart. Null disables follow-up retries.
+    /// </summary>
+    public FollowUpRetryOptions? FollowUpRetry { get; init; }
 
     /// <summary>Behavior when a new occurrence fires while the previous execution still runs.</summary>
     public OverlapPolicy OverlapPolicy { get; init; } = OverlapPolicy.SkipNewExecution;

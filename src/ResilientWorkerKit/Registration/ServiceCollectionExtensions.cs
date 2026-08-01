@@ -75,6 +75,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IIdempotencyStore>(sp =>
             new InMemoryIdempotencyStore(sp.GetRequiredService<TimeProvider>()));
         services.TryAddSingleton<IDeadLetterStore, InMemoryDeadLetterStore>();
+        services.TryAddSingleton<IPendingOccurrenceStore, InMemoryPendingOccurrenceStore>();
         services.TryAddSingleton<IJobLockProvider, InProcessJobLockProvider>();
         services.TryAddSingleton<IJobFailureClassifier, DefaultJobFailureClassifier>();
 

@@ -23,6 +23,7 @@ public sealed class WorkerKitMetrics : IDisposable
     private readonly Counter<long> _misfires;
     private readonly Counter<long> _overlapsSkipped;
     private readonly Counter<long> _deadLetters;
+    private readonly Counter<long> _followUps;
     private readonly Histogram<double> _duration;
     private readonly UpDownCounter<long> _running;
 
@@ -45,6 +46,8 @@ public sealed class WorkerKitMetrics : IDisposable
             description: "Occurrences skipped or queued because the previous execution was still running.");
         _deadLetters = _meter.CreateCounter<long>("workerkit.job.dead_letters", unit: "{record}",
             description: "Dead-letter records created.");
+        _followUps = _meter.CreateCounter<long>("workerkit.job.follow_ups", unit: "{occurrence}",
+            description: "Durable follow-up retry occurrences queued after a failed execution.");
         _duration = _meter.CreateHistogram<double>("workerkit.job.duration", unit: "s",
             description: "Job execution duration in seconds.");
         _running = _meter.CreateUpDownCounter<long>("workerkit.job.running", unit: "{execution}",
@@ -76,6 +79,9 @@ public sealed class WorkerKitMetrics : IDisposable
 
     internal void DeadLetterCreated(string jobId)
         => _deadLetters.Add(1, new KeyValuePair<string, object?>("job.id", jobId));
+
+    internal void FollowUpQueued(string jobId)
+        => _followUps.Add(1, new KeyValuePair<string, object?>("job.id", jobId));
 
     /// <inheritdoc />
     public void Dispose() => _meter.Dispose();

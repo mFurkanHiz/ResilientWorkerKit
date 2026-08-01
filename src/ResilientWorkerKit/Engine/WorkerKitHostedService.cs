@@ -12,6 +12,7 @@ internal sealed class WorkerKitHostedService : BackgroundService
     private readonly IJobRegistry _registry;
     private readonly JobRunner _runner;
     private readonly IJobExecutionStore _executionStore;
+    private readonly IPendingOccurrenceStore _pendingStore;
     private readonly JobHealthTracker _health;
     private readonly WorkerKitMetrics _metrics;
     private readonly WorkerKitOptions _options;
@@ -24,6 +25,7 @@ internal sealed class WorkerKitHostedService : BackgroundService
         IJobRegistry registry,
         JobRunner runner,
         IJobExecutionStore executionStore,
+        IPendingOccurrenceStore pendingStore,
         JobHealthTracker health,
         WorkerKitMetrics metrics,
         WorkerKitOptions options,
@@ -33,6 +35,7 @@ internal sealed class WorkerKitHostedService : BackgroundService
         _registry = registry;
         _runner = runner;
         _executionStore = executionStore;
+        _pendingStore = pendingStore;
         _health = health;
         _metrics = metrics;
         _options = options;
@@ -47,7 +50,7 @@ internal sealed class WorkerKitHostedService : BackgroundService
             {
                 var jobLogger = _loggerFactory.CreateLogger($"ResilientWorkerKit.Jobs.{definition.JobId}");
                 _loops[definition.JobId] = new JobScheduleLoop(
-                    definition, _runner, _executionStore, _health, _metrics, _time, jobLogger);
+                    definition, _runner, _executionStore, _pendingStore, _health, _metrics, _time, jobLogger);
             }
         }
     }

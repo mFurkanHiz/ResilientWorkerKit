@@ -30,6 +30,8 @@ public abstract class JobBuilder
 
     private protected JobRetryOptions RetryOptions { get; } = new();
 
+    private protected FollowUpRetryOptions? FollowUpRetryOptions { get; set; }
+
     private protected OverlapPolicy OverlapPolicyValue { get; set; } = OverlapPolicy.SkipNewExecution;
 
     private protected MisfirePolicy? MisfirePolicyValue { get; set; }
@@ -62,6 +64,7 @@ public abstract class JobBuilder
             TimeZone = timeZone,
             Timeout = TimeoutValue,
             Retry = RetryOptions,
+            FollowUpRetry = FollowUpRetryOptions,
             OverlapPolicy = OverlapPolicyValue,
             MisfirePolicy = misfire,
             MisfireTolerance = MisfireToleranceValue,
@@ -70,6 +73,12 @@ public abstract class JobBuilder
             HealthThresholds = Health,
         };
     }
+
+    /// <summary>
+    /// Resolves the configured time zone immediately, for schedules that need it while they are
+    /// being built rather than at validation time.
+    /// </summary>
+    private protected TimeZoneInfo ResolveTimeZoneOrThrow() => ResolveTimeZone();
 
     private TimeZoneInfo ResolveTimeZone()
     {
@@ -93,7 +102,11 @@ public abstract class JobBuilder
     private MisfirePolicy DefaultMisfirePolicy() => Schedule switch
     {
         FixedDelaySchedule => MisfirePolicy.RescheduleFromNow,
-        OneTimeSchedule => MisfirePolicy.RunImmediatelyOnce,
+
+        // A planned one-off action is scheduled because it must happen; silently skipping it
+        // because the host was down at that minute is the wrong default.
+        OneTimeSchedule or ExplicitTimesSchedule => MisfirePolicy.RunImmediatelyOnce,
+
         _ => MisfirePolicy.Skip,
     };
 
@@ -112,7 +125,7 @@ public abstract class JobBuilder
         }
 
         var isCalendar = Schedule is CronSchedule or DailySchedule or WeeklySchedule
-            or MonthlySchedule or LastDayOfMonthSchedule or OneTimeSchedule;
+            or MonthlySchedule or LastDayOfMonthSchedule or OneTimeSchedule or ExplicitTimesSchedule;
         if (policy == MisfirePolicy.RescheduleFromNow && isCalendar)
         {
             throw new JobConfigurationException(
@@ -123,6 +136,30 @@ public abstract class JobBuilder
 
     private void ValidateRetry()
     {
+        if (FollowUpRetryOptions is { } followUp)
+        {
+            if (followUp.MaxAttempts < 1)
+            {
+                throw new JobConfigurationException($"Job '{JobId}': follow-up MaxAttempts must be ≥ 1.");
+            }
+
+            if (followUp.Delay <= TimeSpan.Zero)
+            {
+                throw new JobConfigurationException($"Job '{JobId}': the follow-up retry delay must be positive.");
+            }
+
+            if (followUp.MaxDelay < followUp.Delay)
+            {
+                throw new JobConfigurationException(
+                    $"Job '{JobId}': the follow-up MaxDelay ({followUp.MaxDelay}) must be at least the base delay ({followUp.Delay}).");
+            }
+
+            if (followUp.BackoffMultiplier < 1)
+            {
+                throw new JobConfigurationException($"Job '{JobId}': the follow-up BackoffMultiplier must be ≥ 1.");
+            }
+        }
+
         if (RetryOptions.MaxRetries < 0)
         {
             throw new JobConfigurationException($"Job '{JobId}': MaxRetries must be ≥ 0.");
@@ -244,6 +281,69 @@ public sealed class JobBuilder<TJob> : JobBuilder where TJob : class, IWorkerJob
         return this;
     }
 
+    /// <summary>
+    /// Runs at an explicit set of instants — for planned actions whose times are known in
+    /// advance, such as a sale opening at 10:00 and 14:00 on one day and 10:00 on the next.
+    /// Each instant is a separate occurrence with its own identity, so completed ones are never
+    /// repeated after a restart.
+    /// </summary>
+    public JobBuilder<TJob> AtTimes(params DateTimeOffset[] times)
+        => AtTimes((IEnumerable<DateTimeOffset>)times);
+
+    /// <inheritdoc cref="AtTimes(DateTimeOffset[])"/>
+    public JobBuilder<TJob> AtTimes(IEnumerable<DateTimeOffset> times)
+    {
+        SetSchedule(new ExplicitTimesSchedule(times));
+        return this;
+    }
+
+    /// <summary>
+    /// Runs at explicit wall-clock times in the given time zone. The local times are resolved
+    /// with the same daylight-saving rules as every other calendar schedule: a time inside a
+    /// spring-forward gap moves to the end of the gap, and an ambiguous fall-back time resolves
+    /// to its first occurrence.
+    /// </summary>
+    /// <param name="timeZone">IANA time zone id, e.g. <c>Europe/Istanbul</c>.</param>
+    /// <param name="localTimes">The local instants; <see cref="DateTimeKind"/> is ignored.</param>
+    public JobBuilder<TJob> AtLocalTimes(string timeZone, params DateTime[] localTimes)
+        => AtLocalTimes(timeZone, (IEnumerable<DateTime>)localTimes);
+
+    /// <inheritdoc cref="AtLocalTimes(string, DateTime[])"/>
+    public JobBuilder<TJob> AtLocalTimes(string timeZone, IEnumerable<DateTime> localTimes)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(timeZone);
+        ArgumentNullException.ThrowIfNull(localTimes);
+
+        WithTimeZone(timeZone);
+        var zone = ResolveTimeZoneOrThrow();
+        SetSchedule(new ExplicitTimesSchedule(
+            localTimes.Select(local => LocalTimeConverter.ToUtc(local, zone))));
+        return this;
+    }
+
+    /// <summary>
+    /// Runs a fixed number of times, starting at <paramref name="startAt"/> and repeating
+    /// every <paramref name="every"/>. Sugar over <see cref="AtTimes(DateTimeOffset[])"/> for
+    /// "three times on the 15th, four hours apart".
+    /// </summary>
+    /// <param name="startAt">The first instant.</param>
+    /// <param name="every">Gap between instants; must be positive.</param>
+    /// <param name="count">Total number of runs; must be at least one.</param>
+    public JobBuilder<TJob> Repeating(DateTimeOffset startAt, TimeSpan every, int count)
+    {
+        if (every <= TimeSpan.Zero)
+        {
+            throw new JobConfigurationException($"Job '{JobId}': the repeat interval must be positive, got {every}.");
+        }
+
+        if (count < 1)
+        {
+            throw new JobConfigurationException($"Job '{JobId}': the repeat count must be at least 1, got {count}.");
+        }
+
+        return AtTimes(Enumerable.Range(0, count).Select(i => startAt + (every * i)));
+    }
+
     /// <summary>Uses a custom <see cref="IJobSchedule"/> implementation.</summary>
     public JobBuilder<TJob> WithSchedule(IJobSchedule schedule)
     {
@@ -288,6 +388,35 @@ public sealed class JobBuilder<TJob> : JobBuilder where TJob : class, IWorkerJob
     public JobBuilder<TJob> WithRetryCount(int maxRetries)
     {
         RetryOptions.MaxRetries = maxRetries;
+        return this;
+    }
+
+    /// <summary>
+    /// Retries the whole occurrence later, durably, after it has failed for good — the in-execution
+    /// attempts configured by <see cref="WithRetry"/> having already been exhausted.
+    /// <para>
+    /// The follow-up is written to the pending-occurrence store, so it survives a process restart
+    /// during the waiting window and runs as a new execution linked to the original occurrence.
+    /// This is what makes a planned one-off action — a sale opening, a settlement run — eventually
+    /// happen even if the host is redeployed in between. It requires a durable store to be useful;
+    /// the default in-memory store loses the queue with the process.
+    /// </para>
+    /// </summary>
+    /// <param name="maxAttempts">How many follow-up executions to queue after the original failure.</param>
+    /// <param name="delay">Delay before the first follow-up.</param>
+    public JobBuilder<TJob> RetryLater(int maxAttempts, TimeSpan delay)
+        => RetryLater(o =>
+        {
+            o.MaxAttempts = maxAttempts;
+            o.Delay = delay;
+        });
+
+    /// <inheritdoc cref="RetryLater(int, TimeSpan)"/>
+    public JobBuilder<TJob> RetryLater(Action<FollowUpRetryOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        FollowUpRetryOptions ??= new FollowUpRetryOptions();
+        configure(FollowUpRetryOptions);
         return this;
     }
 

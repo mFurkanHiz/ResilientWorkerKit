@@ -26,6 +26,7 @@ internal sealed class LoopHarness : IAsyncDisposable
         Checkpoints = new InMemoryJobCheckpointStore();
         Idempotency = new InMemoryIdempotencyStore(Time);
         DeadLetters = new InMemoryDeadLetterStore();
+        PendingOccurrences = new InMemoryPendingOccurrenceStore();
         Health = new JobHealthTracker();
         _metrics = new WorkerKitMetrics();
 
@@ -51,6 +52,8 @@ internal sealed class LoopHarness : IAsyncDisposable
 
     public InMemoryDeadLetterStore DeadLetters { get; }
 
+    public InMemoryPendingOccurrenceStore PendingOccurrences { get; }
+
     public JobHealthTracker Health { get; }
 
     public JobRunner Runner { get; }
@@ -58,7 +61,7 @@ internal sealed class LoopHarness : IAsyncDisposable
     public JobScheduleLoop StartLoop(JobDefinition definition)
     {
         var loop = new JobScheduleLoop(
-            definition, Runner, Executions, Health, _metrics, Time, NullLogger.Instance);
+            definition, Runner, Executions, PendingOccurrences, Health, _metrics, Time, NullLogger.Instance);
         _loopTasks.Add(loop.RunAsync(_cts.Token));
         return loop;
     }

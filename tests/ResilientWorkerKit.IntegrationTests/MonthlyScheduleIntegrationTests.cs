@@ -43,13 +43,18 @@ public class MonthlyScheduleIntegrationTests
         var host = await StartMonthlyHostAsync(database, counter, new FixedIdentitySchedule("2026-08"));
         await using (host)
         {
-            await WorkerHost.WaitUntilAsync(async () => counter.Count >= 1);
+            // Wait for the recorded outcome, not for the job body: the counter is incremented
+            // inside the execution, while the Completed record is written after it returns.
+            await WorkerHost.WaitUntilAsync(async () => (await host.HistoryAsync(JobId))
+                .Any(r => r.ScheduledExecutionId == $"{JobId}:2026-08"
+                          && r.Status == JobExecutionStatus.Completed));
 
             var august = (await host.HistoryAsync(JobId))
                 .Where(r => r.ScheduledExecutionId == $"{JobId}:2026-08")
                 .ToList();
             Assert.Contains(august, r => r.Status == JobExecutionStatus.Failed);
             Assert.Contains(august, r => r.Status == JobExecutionStatus.Completed);
+            Assert.True(counter.Count >= 1, "the job body must have executed");
         }
     }
 

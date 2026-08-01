@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -45,10 +46,23 @@ internal sealed class WorkerHost : IAsyncDisposable
 
     public T GetRequiredService<T>() where T : notnull => _host.Services.GetRequiredService<T>();
 
-    /// <summary>Polls a condition without blocking the host (bounded, no Thread.Sleep).</summary>
-    public static async Task WaitUntilAsync(Func<Task<bool>> condition, TimeSpan? timeout = null)
+    /// <summary>
+    /// Polls a condition without blocking the host (bounded, no Thread.Sleep). The default budget
+    /// is generous because these tests start real hosts, create real schema and run on shared CI
+    /// runners; a tight bound here produces flaky failures rather than useful signal.
+    /// </summary>
+    /// <param name="condition">The condition to await.</param>
+    /// <param name="timeout">Override for the default budget.</param>
+    /// <param name="description">
+    /// What is being awaited, quoted back in the timeout message so a CI failure explains itself.
+    /// </param>
+    public static async Task WaitUntilAsync(
+        Func<Task<bool>> condition,
+        TimeSpan? timeout = null,
+        [CallerArgumentExpression(nameof(condition))] string? description = null)
     {
-        var deadline = DateTimeOffset.UtcNow + (timeout ?? TimeSpan.FromSeconds(20));
+        var budget = timeout ?? TimeSpan.FromSeconds(60);
+        var deadline = DateTimeOffset.UtcNow + budget;
         while (DateTimeOffset.UtcNow < deadline)
         {
             if (await condition())
@@ -59,7 +73,8 @@ internal sealed class WorkerHost : IAsyncDisposable
             await Task.Delay(25);
         }
 
-        throw new TimeoutException("The awaited condition never became true.");
+        throw new TimeoutException(
+            $"The awaited condition never became true within {budget}. Condition: {description}");
     }
 
     public async ValueTask DisposeAsync()

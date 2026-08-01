@@ -1,0 +1,34 @@
+# Codecov configuration.
+#
+# The published number should mean "how much of the shipped library is covered", so everything
+# that is not a shipped library is excluded: test projects, sample applications, and generated
+# code. That keeps the badge comparable to the ReportGenerator summary printed in the CI job.
+
+coverage:
+  precision: 1
+  round: down
+  range: "70...90"
+
+  status:
+    project:
+      default:
+        # Informational for now: a coverage dip should be visible in the PR, not block a merge.
+        target: auto
+        threshold: 2%
+        informational: true
+    patch:
+      default:
+        informational: true
+
+ignore:
+  - "tests/**"
+  - "samples/**"
+  - "**/obj/**"
+  - "**/bin/**"
+  - "**/*.g.cs"
+  - "**/*.Designer.cs"
+
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+  require_changes: true

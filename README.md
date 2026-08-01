@@ -5,7 +5,7 @@
 [![CI](https://github.com/mFurkanHiz/ResilientWorkerKit/actions/workflows/ci.yml/badge.svg)](https://github.com/mFurkanHiz/ResilientWorkerKit/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET](https://img.shields.io/badge/.NET-10.0%20%7C%208.0-512BD4)](https://dotnet.microsoft.com/download/dotnet/10.0)
-[![Tests](https://img.shields.io/badge/tests-221%20%C3%97%202%20TFMs-brightgreen)](#tests)
+[![Tests](https://img.shields.io/badge/tests-net10%20%7C%20net8%20%C3%97%20linux%20%7C%20windows-brightgreen)](https://github.com/mFurkanHiz/ResilientWorkerKit/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/badge/coverage-86.1%25%20lines-brightgreen)](#tests)
 
 ResilientWorkerKit is a lightweight reliability and execution layer for background jobs hosted in

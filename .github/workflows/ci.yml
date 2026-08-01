@@ -70,6 +70,19 @@ jobs:
           cat CoverageReport/Summary.txt
           cat CoverageReport/SummaryGithub.md >> $GITHUB_STEP_SUMMARY
 
+      # Uploaded from the Linux leg only, so the published number comes from one deterministic
+      # run rather than being merged across two operating systems.
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./TestResults/**/coverage.cobertura.xml
+          flags: unittests,integrationtests
+          name: resilientworkerkit
+          # Coverage reporting must never be able to fail a build that passed its tests.
+          fail_ci_if_error: false
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v5

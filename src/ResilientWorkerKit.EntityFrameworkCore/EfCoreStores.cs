@@ -392,20 +392,35 @@ public sealed class EfCoreIdempotencyStore : IIdempotencyStore
     private async Task SetStatusAsync(string jobId, string key, IdempotencyStatus status, CancellationToken cancellationToken)
     {
         var now = _time.GetUtcNow().UtcDateTime;
-        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-        await using (db.ConfigureAwait(false))
-        {
-            var entity = await db.IdempotencyRecords
-                .FirstOrDefaultAsync(r => r.JobId == jobId && r.Key == key, cancellationToken).ConfigureAwait(false);
-            if (entity is null)
-            {
-                return;
-            }
 
-            entity.Status = status;
-            entity.CompletedAtUtc = status == IdempotencyStatus.Completed ? now : entity.CompletedAtUtc;
-            entity.Version++;
-            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        // Retried like TryAcquireAsync: this runs *after* the side effect succeeded, so losing a
+        // concurrency race here must not fail the execution and cause a duplicate later.
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+            await using (db.ConfigureAwait(false))
+            {
+                var entity = await db.IdempotencyRecords
+                    .FirstOrDefaultAsync(r => r.JobId == jobId && r.Key == key, cancellationToken).ConfigureAwait(false);
+                if (entity is null)
+                {
+                    return;
+                }
+
+                entity.Status = status;
+                entity.CompletedAtUtc = status == IdempotencyStatus.Completed ? now : entity.CompletedAtUtc;
+                entity.Version++;
+
+                try
+                {
+                    await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    // Someone else changed the row; re-read and apply again.
+                }
+            }
         }
     }
 }

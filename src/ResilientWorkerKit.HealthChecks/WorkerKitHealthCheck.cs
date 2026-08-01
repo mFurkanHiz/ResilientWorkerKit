@@ -4,15 +4,21 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 namespace ResilientWorkerKit.HealthChecks;
 
 /// <summary>
-/// Aggregate health check over all registered jobs. Per-job evaluation:
-/// <list type="bullet">
-/// <item>A job that never ran yet is Healthy (deploying a new job must not page anyone).</item>
-/// <item>Consecutive failures ≥ degraded threshold → Degraded; ≥ unhealthy threshold → Unhealthy.</item>
-/// <item>No success for longer than <see cref="JobHealthThresholds.UnhealthyWhenNoSuccessFor"/> (with at least one failure) → Unhealthy.</item>
-/// <item>Running longer than the stuck threshold (explicit, or 2× the job timeout) → Degraded ("possibly stuck").</item>
+/// Aggregate health check over all registered jobs. Each job is evaluated in this order:
+/// <list type="number">
+/// <item>A job that has never run is Healthy — deploying a new job must not page anyone.</item>
+/// <item>Running longer than the stuck threshold (explicit
+/// <see cref="JobHealthThresholds.StuckAfter"/>, or 2× the job's total timeout) → Degraded
+/// ("possibly stuck").</item>
+/// <item>Consecutive failures ≥ <see cref="JobHealthThresholds.UnhealthyAfterConsecutiveFailures"/> → Unhealthy.</item>
+/// <item>No successful execution for longer than
+/// <see cref="JobHealthThresholds.UnhealthyWhenNoSuccessFor"/> → Unhealthy. A job that has run but
+/// never succeeded is measured from its first observed start, so "never succeeded" also trips this rule.</item>
+/// <item>Consecutive failures ≥ <see cref="JobHealthThresholds.DegradedAfterConsecutiveFailures"/> → Degraded.</item>
+/// <item>Otherwise Healthy.</item>
 /// </list>
 /// The aggregate status is the worst individual status; details for every job are exposed in
-/// the health entry's data dictionary.
+/// the health entry's data dictionary. Health state is in-memory and resets on restart.
 /// </summary>
 public sealed class WorkerKitHealthCheck : IHealthCheck
 {
@@ -92,12 +98,17 @@ public sealed class WorkerKitHealthCheck : IHealthCheck
             return (HealthStatus.Unhealthy, $"{snapshot.ConsecutiveFailures} consecutive failures (last: {snapshot.LastResult})");
         }
 
-        if (thresholds.UnhealthyWhenNoSuccessFor is { } noSuccessWindow
-            && snapshot.ConsecutiveFailures > 0
-            && snapshot.LastSuccessAtUtc is { } lastSuccess
-            && now - lastSuccess > noSuccessWindow)
+        if (thresholds.UnhealthyWhenNoSuccessFor is { } noSuccessWindow && snapshot.ConsecutiveFailures > 0)
         {
-            return (HealthStatus.Unhealthy, $"no successful execution since {Format(lastSuccess)}");
+            // A job that has run but never succeeded is the worst case, so it must be able to
+            // trip this rule too: fall back to the first observed start as the baseline.
+            var baseline = snapshot.LastSuccessAtUtc ?? snapshot.FirstStartedAtUtc;
+            if (baseline is { } baselineUtc && now - baselineUtc > noSuccessWindow)
+            {
+                return (HealthStatus.Unhealthy, snapshot.LastSuccessAtUtc is null
+                    ? $"no successful execution ever; first attempt {Format(baselineUtc)}"
+                    : $"no successful execution since {Format(baselineUtc)}");
+            }
         }
 
         if (snapshot.ConsecutiveFailures >= thresholds.DegradedAfterConsecutiveFailures)

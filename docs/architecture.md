@@ -129,5 +129,6 @@ schedule computation and delay is testable with `FakeTimeProvider`.
   records with masked payload summaries.
 
 All four have in-memory implementations (single process, test/demo) and EF Core implementations
-(durable, relational). The EF Core idempotency race is settled by a **unique index** on
-`(JobId, IdempotencyKey)` — the second concurrent insert loses at the database, not in C#.
+(durable, relational). The EF Core idempotency race is settled by the **composite primary key**
+on `(JobId, Key)` plus a `Version` concurrency token — the second concurrent insert (or the
+second concurrent re-acquire of an expired record) loses at the database, not in C#.

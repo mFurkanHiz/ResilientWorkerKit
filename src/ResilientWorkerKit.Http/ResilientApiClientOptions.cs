@@ -42,11 +42,11 @@ public sealed class ResilientApiClientOptions
     /// </summary>
     public bool UseBearerTokenProvider { get; set; }
 
-    /// <summary>Logs safe request metadata (method, host, path, status, duration — never bodies, queries or secrets). Default true.</summary>
+    /// <summary>
+    /// Logs safe request metadata (method, host, path, status, duration — never bodies, query
+    /// strings, headers or secrets). Default true.
+    /// </summary>
     public bool EnableSafeLogging { get; set; } = true;
-
-    /// <summary>Extra header names to treat as sensitive in diagnostics.</summary>
-    public ISet<string> AdditionalMaskedHeaders { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Customizes the standard resilience pipeline (retry with backoff+jitter honoring

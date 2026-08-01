@@ -18,6 +18,12 @@ public sealed class JobHealthSnapshot
     /// <summary>Scheduled time of the most recent occurrence that was started.</summary>
     public DateTimeOffset? LastScheduledAtUtc { get; init; }
 
+    /// <summary>
+    /// Start time of the first execution observed by this host instance. Used as the baseline
+    /// for "no success for too long" when the job has never succeeded at all.
+    /// </summary>
+    public DateTimeOffset? FirstStartedAtUtc { get; init; }
+
     /// <summary>Start time of the most recent execution.</summary>
     public DateTimeOffset? LastStartedAtUtc { get; init; }
 

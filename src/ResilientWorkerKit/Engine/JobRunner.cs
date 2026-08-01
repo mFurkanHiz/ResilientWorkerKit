@@ -276,9 +276,11 @@ internal sealed class JobRunner
         record.UpdatedAtUtc = completedAt;
         if (finalException is not null)
         {
+            // Masked before persisting: an exception message can carry a token or connection
+            // string, and the execution history is long-lived and widely readable.
             record.ErrorType = finalException.GetType().FullName;
-            record.ErrorMessage = Truncate(finalException.Message, 500);
-            record.ErrorDetail = Truncate(finalException.ToString(), 4000);
+            record.ErrorMessage = Truncate(SensitiveDataMasker.MaskSecrets(finalException.Message), 500);
+            record.ErrorDetail = Truncate(SensitiveDataMasker.MaskSecrets(finalException.ToString()), 4000);
         }
 
         await SafeStoreAsync(() => _executionStore.UpdateAsync(record, CancellationToken.None), "UpdateExecution", logger)

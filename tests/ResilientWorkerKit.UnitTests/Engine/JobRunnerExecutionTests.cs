@@ -109,6 +109,25 @@ public class JobRunnerExecutionTests
     }
 
     [Fact]
+    public async Task PersistedErrorText_IsMasked_SoSecretsDoNotLandInHistory()
+    {
+        await using var harness = new RunnerHarness((_, _) =>
+            throw new PermanentJobException(
+                "upstream rejected the call: Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc.def, api_key=super-secret"));
+
+        await harness.RunAsync(RunnerHarness.Definition());
+
+        var record = await harness.Executions.GetLatestAsync("test-job");
+        Assert.DoesNotContain("eyJhbGciOiJIUzI1NiJ9", record!.ErrorMessage);
+        Assert.DoesNotContain("super-secret", record.ErrorMessage);
+        Assert.DoesNotContain("eyJhbGciOiJIUzI1NiJ9", record.ErrorDetail);
+        Assert.DoesNotContain("super-secret", record.ErrorDetail);
+
+        // The diagnostic value survives — only the credentials are removed.
+        Assert.Contains("upstream rejected the call", record.ErrorMessage);
+    }
+
+    [Fact]
     public async Task RunnerNeverThrows_EvenWhenTheExecutionStoreIsBroken()
     {
         await using var harness = new RunnerHarness((_, _) => Task.CompletedTask,

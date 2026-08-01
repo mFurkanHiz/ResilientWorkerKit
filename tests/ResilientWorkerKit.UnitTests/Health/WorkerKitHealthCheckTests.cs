@@ -126,6 +126,30 @@ public class WorkerKitHealthCheckTests
     }
 
     [Fact]
+    public async Task JobThatHasRunButNeverSucceeded_AlsoTripsTheNoSuccessWindow()
+    {
+        var check = Check(RunnerHarness.Definition(
+            b => b.WithHealthThresholds(t =>
+            {
+                t.UnhealthyWhenNoSuccessFor = TimeSpan.FromHours(1);
+                t.DegradedAfterConsecutiveFailures = 10;   // keep the streak rules out of the way
+                t.UnhealthyAfterConsecutiveFailures = 20;
+            }),
+            jobId: "never-ok-job"));
+
+        var start = _time.GetUtcNow();
+        _tracker.OnExecutionStarted("never-ok-job", start, start);
+        _tracker.OnExecutionFinished("never-ok-job", JobExecutionStatus.Failed, start, 10);
+
+        _time.Advance(TimeSpan.FromHours(2));
+
+        var result = await Run(check);
+
+        Assert.Equal(HealthStatus.Unhealthy, result.Status);
+        Assert.Contains("no successful execution ever", result.Data["never-ok-job"].ToString());
+    }
+
+    [Fact]
     public async Task LongRunningExecution_IsReportedAsPossiblyStuck()
     {
         var check = Check(RunnerHarness.Definition(

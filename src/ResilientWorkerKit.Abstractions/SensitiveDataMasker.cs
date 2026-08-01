@@ -1,10 +1,16 @@
 using System.Text.RegularExpressions;
 
-namespace ResilientWorkerKit.Http;
+namespace ResilientWorkerKit;
 
 /// <summary>
-/// Masks secrets in strings and identifies sensitive headers. Used by the safe logging
-/// handler and available to applications for their own diagnostics.
+/// Masks credentials inside free-form text and identifies sensitive headers.
+/// <para>
+/// Used by the engine before persisting exception messages to the execution history, by the
+/// HTTP package's safe logging handler, and available to applications for their own diagnostics.
+/// It is a defense-in-depth net, not a guarantee: the reliable protection is not putting secrets
+/// into exception messages, log arguments or dead-letter payloads in the first place
+/// (see docs/security.md).
+/// </para>
 /// </summary>
 public static partial class SensitiveDataMasker
 {

@@ -15,6 +15,7 @@ public sealed class JobHealthTracker : IJobHealthTracker, IJobProgressReporter
         public int RunningCount;
         public DateTimeOffset? RunningSinceUtc;
         public DateTimeOffset? LastScheduledAtUtc;
+        public DateTimeOffset? FirstStartedAtUtc;
         public DateTimeOffset? LastStartedAtUtc;
         public DateTimeOffset? LastCompletedAtUtc;
         public DateTimeOffset? LastSuccessAtUtc;
@@ -55,6 +56,7 @@ public sealed class JobHealthTracker : IJobHealthTracker, IJobProgressReporter
             var state = GetState(jobId);
             state.RunningCount++;
             state.RunningSinceUtc ??= startedAtUtc;
+            state.FirstStartedAtUtc ??= startedAtUtc;
             state.LastStartedAtUtc = startedAtUtc;
             state.LastScheduledAtUtc = scheduledAtUtc;
             state.LastProgress = null;
@@ -145,6 +147,7 @@ public sealed class JobHealthTracker : IJobHealthTracker, IJobProgressReporter
         IsRunning = s.RunningCount > 0,
         RunningSinceUtc = s.RunningSinceUtc,
         LastScheduledAtUtc = s.LastScheduledAtUtc,
+        FirstStartedAtUtc = s.FirstStartedAtUtc,
         LastStartedAtUtc = s.LastStartedAtUtc,
         LastCompletedAtUtc = s.LastCompletedAtUtc,
         LastSuccessAtUtc = s.LastSuccessAtUtc,

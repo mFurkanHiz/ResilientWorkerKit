@@ -1,5 +1,10 @@
 namespace ResilientWorkerKit.EntityFrameworkCore;
 
+// Timestamps are persisted as UTC DateTime rather than DateTimeOffset on purpose: SQLite
+// cannot ORDER BY or compare DateTimeOffset columns, and every timestamp in the model is
+// UTC by construction, so the offset carries no information. The store converts at the
+// mapping boundary, keeping DateTimeOffset in the public abstractions.
+
 /// <summary>Relational row for one job execution.</summary>
 public sealed class JobExecutionEntity
 {
@@ -13,7 +18,7 @@ public sealed class JobExecutionEntity
     public string ScheduledExecutionId { get; set; } = null!;
 
     /// <summary>Planned time (UTC).</summary>
-    public DateTimeOffset ScheduledAtUtc { get; set; }
+    public DateTime ScheduledAtUtc { get; set; }
 
     /// <summary>Planned time in the job's zone.</summary>
     public DateTime? ScheduledLocalTime { get; set; }
@@ -25,10 +30,10 @@ public sealed class JobExecutionEntity
     public string TriggerType { get; set; } = "schedule";
 
     /// <summary>Start time (UTC).</summary>
-    public DateTimeOffset StartedAtUtc { get; set; }
+    public DateTime StartedAtUtc { get; set; }
 
     /// <summary>Completion time (UTC).</summary>
-    public DateTimeOffset? CompletedAtUtc { get; set; }
+    public DateTime? CompletedAtUtc { get; set; }
 
     /// <summary>Status (stored as string).</summary>
     public JobExecutionStatus Status { get; set; }
@@ -61,10 +66,10 @@ public sealed class JobExecutionEntity
     public string? LastCheckpointSummary { get; set; }
 
     /// <summary>Row creation time (UTC).</summary>
-    public DateTimeOffset CreatedAtUtc { get; set; }
+    public DateTime CreatedAtUtc { get; set; }
 
     /// <summary>Row update time (UTC).</summary>
-    public DateTimeOffset UpdatedAtUtc { get; set; }
+    public DateTime UpdatedAtUtc { get; set; }
 }
 
 /// <summary>Relational row for a job's checkpoint (one per job).</summary>
@@ -80,7 +85,7 @@ public sealed class JobCheckpointEntity
     public string? PayloadType { get; set; }
 
     /// <summary>Last advance time (UTC).</summary>
-    public DateTimeOffset UpdatedAtUtc { get; set; }
+    public DateTime UpdatedAtUtc { get; set; }
 }
 
 /// <summary>Relational row for one idempotency record; PK (JobId, Key) settles acquire races.</summary>
@@ -99,13 +104,13 @@ public sealed class JobIdempotencyEntity
     public string? ExecutionId { get; set; }
 
     /// <summary>Creation time (UTC).</summary>
-    public DateTimeOffset CreatedAtUtc { get; set; }
+    public DateTime CreatedAtUtc { get; set; }
 
     /// <summary>Completion time (UTC).</summary>
-    public DateTimeOffset? CompletedAtUtc { get; set; }
+    public DateTime? CompletedAtUtc { get; set; }
 
     /// <summary>Optional expiry (UTC).</summary>
-    public DateTimeOffset? ExpiresAtUtc { get; set; }
+    public DateTime? ExpiresAtUtc { get; set; }
 
     /// <summary>Optimistic-concurrency token: incremented on every state change.</summary>
     public int Version { get; set; }
@@ -142,8 +147,8 @@ public sealed class JobDeadLetterEntity
     public string? PayloadSummary { get; set; }
 
     /// <summary>Creation time (UTC).</summary>
-    public DateTimeOffset CreatedAtUtc { get; set; }
+    public DateTime CreatedAtUtc { get; set; }
 
     /// <summary>Reprocess time (UTC), when handled.</summary>
-    public DateTimeOffset? ReprocessedAtUtc { get; set; }
+    public DateTime? ReprocessedAtUtc { get; set; }
 }

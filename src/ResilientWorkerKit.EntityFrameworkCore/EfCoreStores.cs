@@ -121,19 +121,19 @@ public sealed class EfCoreJobExecutionStore : IJobExecutionStore
         ExecutionId = r.ExecutionId,
         JobId = r.JobId,
         ScheduledExecutionId = r.ScheduledExecutionId,
-        ScheduledAtUtc = r.ScheduledAtUtc,
+        ScheduledAtUtc = r.ScheduledAtUtc.UtcDateTime,
         ScheduledLocalTime = r.ScheduledLocalTime,
         TimeZoneId = r.TimeZoneId,
         TriggerType = r.TriggerType,
-        StartedAtUtc = r.StartedAtUtc,
+        StartedAtUtc = r.StartedAtUtc.UtcDateTime,
         CorrelationId = r.CorrelationId,
         HostInstanceId = r.HostInstanceId,
-        CreatedAtUtc = r.CreatedAtUtc,
+        CreatedAtUtc = r.CreatedAtUtc.UtcDateTime,
     });
 
     private static JobExecutionEntity Apply(JobExecutionRecord r, JobExecutionEntity e)
     {
-        e.CompletedAtUtc = r.CompletedAtUtc;
+        e.CompletedAtUtc = r.CompletedAtUtc?.UtcDateTime;
         e.Status = r.Status;
         e.FailureKind = r.FailureKind;
         e.AttemptCount = r.AttemptCount;
@@ -142,7 +142,7 @@ public sealed class EfCoreJobExecutionStore : IJobExecutionStore
         e.ErrorMessage = r.ErrorMessage;
         e.ErrorDetail = r.ErrorDetail;
         e.LastCheckpointSummary = r.LastCheckpointSummary;
-        e.UpdatedAtUtc = r.UpdatedAtUtc;
+        e.UpdatedAtUtc = r.UpdatedAtUtc.UtcDateTime;
         return e;
     }
 
@@ -151,12 +151,12 @@ public sealed class EfCoreJobExecutionStore : IJobExecutionStore
         JobId = e.JobId,
         ExecutionId = e.ExecutionId,
         ScheduledExecutionId = e.ScheduledExecutionId,
-        ScheduledAtUtc = e.ScheduledAtUtc,
+        ScheduledAtUtc = Utc(e.ScheduledAtUtc),
         ScheduledLocalTime = e.ScheduledLocalTime,
         TimeZoneId = e.TimeZoneId,
         TriggerType = e.TriggerType,
-        StartedAtUtc = e.StartedAtUtc,
-        CompletedAtUtc = e.CompletedAtUtc,
+        StartedAtUtc = Utc(e.StartedAtUtc),
+        CompletedAtUtc = e.CompletedAtUtc is { } completed ? Utc(completed) : null,
         Status = e.Status,
         FailureKind = e.FailureKind,
         AttemptCount = e.AttemptCount,
@@ -167,9 +167,12 @@ public sealed class EfCoreJobExecutionStore : IJobExecutionStore
         CorrelationId = e.CorrelationId,
         HostInstanceId = e.HostInstanceId,
         LastCheckpointSummary = e.LastCheckpointSummary,
-        CreatedAtUtc = e.CreatedAtUtc,
-        UpdatedAtUtc = e.UpdatedAtUtc,
+        CreatedAtUtc = Utc(e.CreatedAtUtc),
+        UpdatedAtUtc = Utc(e.UpdatedAtUtc),
     };
+
+    internal static DateTimeOffset Utc(DateTime value)
+        => new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
 }
 
 /// <summary>EF Core checkpoint store (one row per job; the save is a single-row upsert).</summary>
@@ -190,7 +193,9 @@ public sealed class EfCoreJobCheckpointStore : IJobCheckpointStore
                 .FirstOrDefaultAsync(c => c.JobId == jobId, cancellationToken).ConfigureAwait(false);
             return entity is null
                 ? null
-                : new JobCheckpoint(entity.JobId, entity.PayloadJson, entity.PayloadType, entity.UpdatedAtUtc);
+                : new JobCheckpoint(
+                    entity.JobId, entity.PayloadJson, entity.PayloadType,
+                    EfCoreJobExecutionStore.Utc(entity.UpdatedAtUtc));
         }
     }
 
@@ -209,14 +214,14 @@ public sealed class EfCoreJobCheckpointStore : IJobCheckpointStore
                     JobId = checkpoint.JobId,
                     PayloadJson = checkpoint.PayloadJson,
                     PayloadType = checkpoint.PayloadType,
-                    UpdatedAtUtc = checkpoint.UpdatedAtUtc,
+                    UpdatedAtUtc = checkpoint.UpdatedAtUtc.UtcDateTime,
                 });
             }
             else
             {
                 entity.PayloadJson = checkpoint.PayloadJson;
                 entity.PayloadType = checkpoint.PayloadType;
-                entity.UpdatedAtUtc = checkpoint.UpdatedAtUtc;
+                entity.UpdatedAtUtc = checkpoint.UpdatedAtUtc.UtcDateTime;
             }
 
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -255,7 +260,8 @@ public sealed class EfCoreIdempotencyStore : IIdempotencyStore
     /// <inheritdoc />
     public async Task<IdempotencyAcquireResult> TryAcquireAsync(string jobId, string key, string executionId, DateTimeOffset? expiresAtUtc, CancellationToken cancellationToken = default)
     {
-        var now = _time.GetUtcNow();
+        var now = _time.GetUtcNow().UtcDateTime;
+        var expires = expiresAtUtc?.UtcDateTime;
 
         for (var attempt = 0; attempt < 3; attempt++)
         {
@@ -274,7 +280,7 @@ public sealed class EfCoreIdempotencyStore : IIdempotencyStore
                         Status = IdempotencyStatus.Pending,
                         ExecutionId = executionId,
                         CreatedAtUtc = now,
-                        ExpiresAtUtc = expiresAtUtc,
+                        ExpiresAtUtc = expires,
                         Version = 0,
                     });
 
@@ -305,7 +311,7 @@ public sealed class EfCoreIdempotencyStore : IIdempotencyStore
                 // Failed or expired: re-acquire under the concurrency token.
                 existing.Status = IdempotencyStatus.Pending;
                 existing.ExecutionId = executionId;
-                existing.ExpiresAtUtc = expiresAtUtc;
+                existing.ExpiresAtUtc = expires;
                 existing.CompletedAtUtc = null;
                 existing.Version++;
 
@@ -327,7 +333,7 @@ public sealed class EfCoreIdempotencyStore : IIdempotencyStore
     /// <inheritdoc />
     public async Task<bool> ExistsCompletedAsync(string jobId, string key, CancellationToken cancellationToken = default)
     {
-        var now = _time.GetUtcNow();
+        var now = _time.GetUtcNow().UtcDateTime;
         var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using (db.ConfigureAwait(false))
         {
@@ -365,9 +371,9 @@ public sealed class EfCoreIdempotencyStore : IIdempotencyStore
                 Key = entity.Key,
                 Status = entity.Status,
                 ExecutionId = entity.ExecutionId,
-                CreatedAtUtc = entity.CreatedAtUtc,
-                CompletedAtUtc = entity.CompletedAtUtc,
-                ExpiresAtUtc = entity.ExpiresAtUtc,
+                CreatedAtUtc = EfCoreJobExecutionStore.Utc(entity.CreatedAtUtc),
+                CompletedAtUtc = entity.CompletedAtUtc is { } completed ? EfCoreJobExecutionStore.Utc(completed) : null,
+                ExpiresAtUtc = entity.ExpiresAtUtc is { } expiry ? EfCoreJobExecutionStore.Utc(expiry) : null,
             };
         }
     }
@@ -385,7 +391,7 @@ public sealed class EfCoreIdempotencyStore : IIdempotencyStore
 
     private async Task SetStatusAsync(string jobId, string key, IdempotencyStatus status, CancellationToken cancellationToken)
     {
-        var now = _time.GetUtcNow();
+        var now = _time.GetUtcNow().UtcDateTime;
         var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using (db.ConfigureAwait(false))
         {
@@ -435,8 +441,8 @@ public sealed class EfCoreDeadLetterStore : IDeadLetterStore
                 Reason = record.Reason,
                 AttemptCount = record.AttemptCount,
                 PayloadSummary = record.PayloadSummary,
-                CreatedAtUtc = record.CreatedAtUtc,
-                ReprocessedAtUtc = record.ReprocessedAtUtc,
+                CreatedAtUtc = record.CreatedAtUtc.UtcDateTime,
+                ReprocessedAtUtc = record.ReprocessedAtUtc?.UtcDateTime,
             });
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -468,8 +474,10 @@ public sealed class EfCoreDeadLetterStore : IDeadLetterStore
                 Reason = e.Reason,
                 AttemptCount = e.AttemptCount,
                 PayloadSummary = e.PayloadSummary,
-                CreatedAtUtc = e.CreatedAtUtc,
-                ReprocessedAtUtc = e.ReprocessedAtUtc,
+                CreatedAtUtc = EfCoreJobExecutionStore.Utc(e.CreatedAtUtc),
+                ReprocessedAtUtc = e.ReprocessedAtUtc is { } reprocessed
+                    ? EfCoreJobExecutionStore.Utc(reprocessed)
+                    : null,
             }).ToList();
         }
     }
@@ -477,7 +485,7 @@ public sealed class EfCoreDeadLetterStore : IDeadLetterStore
     /// <inheritdoc />
     public async Task MarkReprocessedAsync(string id, CancellationToken cancellationToken = default)
     {
-        var now = _time.GetUtcNow();
+        var now = _time.GetUtcNow().UtcDateTime;
         var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using (db.ConfigureAwait(false))
         {

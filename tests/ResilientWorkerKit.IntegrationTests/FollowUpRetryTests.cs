@@ -80,7 +80,7 @@ public class FollowUpRetryTests
             Assert.Equal($"{JobId}:at:{saleTime.UtcDateTime:yyyy-MM-dd'T'HH:mm:ss'Z'}", pending.OriginScheduledExecutionId);
 
             // It has not run yet: it is not due, and host #1 is about to disappear.
-            Assert.Empty(firstState.Attempts.Where(a => a.Contains("followup-", StringComparison.Ordinal)));
+            Assert.DoesNotContain(firstState.Attempts, a => a.Contains("followup-", StringComparison.Ordinal));
         }
 
         // ---- Host #2: a brand new process, same database, upstream now healthy ---------------

@@ -5,8 +5,8 @@
 [![CI](https://github.com/mFurkanHiz/ResilientWorkerKit/actions/workflows/ci.yml/badge.svg)](https://github.com/mFurkanHiz/ResilientWorkerKit/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET](https://img.shields.io/badge/.NET-10.0%20%7C%208.0-512BD4)](https://dotnet.microsoft.com/download/dotnet/10.0)
-[![Tests](https://img.shields.io/badge/tests-182%20%C3%97%202%20TFMs-brightgreen)](#tests)
-[![Coverage](https://img.shields.io/badge/coverage-86.4%25%20lines-brightgreen)](#tests)
+[![Tests](https://img.shields.io/badge/tests-192%20%C3%97%202%20TFMs-brightgreen)](#tests)
+[![Coverage](https://img.shields.io/badge/coverage-85.4%25%20lines-brightgreen)](#tests)
 
 ResilientWorkerKit is a lightweight reliability and execution layer for background jobs hosted in
 a .NET Generic Host. You write the business logic; the kit owns the loop, the failure boundary,
@@ -343,17 +343,17 @@ dotnet test
 
 | Suite | Count | Scope |
 |---|---|---|
-| Unit | 169 | Schedule math (DST gaps, ambiguous hours, leap years, invalid-day policies), retry backoff and jitter bounds, failure classification, runner execution/retry/checkpoint/idempotency, misfire and overlap policies, manual triggers, graceful shutdown, in-memory stores, health evaluation, HTTP handlers and masking, registration validation |
+| Unit | 179 | Schedule math (DST gaps, ambiguous hours, leap years, invalid-day policies), retry backoff and jitter bounds, failure classification, runner execution/retry/checkpoint/idempotency, misfire and overlap policies, manual triggers, graceful shutdown, in-memory stores, health evaluation, HTTP handlers and masking, registration validation |
 | Integration | 13 | Real Generic Host, real DI scopes, real SQLite file database that survives restarts, real HTTP server: the end-to-end failure→restart→resume scenario, `Retry-After` and permanent-400 handling, abandoned-execution recovery, monthly identity across restarts, the EF Core idempotency race, health checks through the real pipeline |
 
-Both suites run against **both target frameworks** — 364 test executions per CI leg, on Linux and
+Both suites run against **both target frameworks** — 384 test executions per CI leg, on Linux and
 Windows. A supported target framework that never executes a test is a claim, not a guarantee.
 
 Schedule and engine tests run on `FakeTimeProvider`, so a month of scheduling is verified in
 milliseconds — the whole suite finishes in about ten seconds.
 
 Measured coverage across the five library assemblies, as reported by CI on the last run
-(coverlet, Release build): **86.4% lines, 78.9% branches, 94% methods**. The uncovered remainder
+(coverlet, Release build): **85.4% lines, 78.3% branches, 93.9% methods**. The uncovered remainder
 is mostly log-message plumbing and defensive store-failure paths. The full HTML report is
 published as a CI artifact on every run.
 

@@ -101,6 +101,13 @@ duplicate JobIds all throw `JobConfigurationException`.
 A job **without** a schedule is legal by design: it never fires on its own and runs only via
 `RunOnStartup()` and/or `IManualJobTrigger`.
 
+`AddResilientWorkerKit` may be called more than once on the same service collection — for
+example once by a library module and once by the application. Every call contributes jobs to the
+same registry and sees the same `WorkerKitOptions` instance; duplicate job ids across separate
+calls still fail fast. The engine's hosted service is always registered last, so anything a
+callback registers to prepare durable state (a schema initializer, a migration runner) starts
+before the first job runs.
+
 ## Store API (extension points)
 
 All durable state flows through five interfaces; in-memory implementations are registered by

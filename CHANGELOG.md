@@ -58,10 +58,17 @@ dependencies for each.
   required.
 - Per-job health checks with configurable thresholds and stuck detection.
 
+**Registration**
+- `AddResilientWorkerKit` is safe to call more than once on one service collection: calls share
+  one options instance and contribute to one job registry.
+- The engine's hosted service always starts last, so store initializers registered from inside
+  the callback are guaranteed to run first.
+
 **Quality**
-- 182 tests (169 unit, 13 integration), executed against **both** target frameworks. Integration
-  tests use a real Generic Host, a real SQLite file that survives restarts and a real HTTP server,
-  including the full failure → restart → resume scenario.
+- 192 tests (179 unit, 13 integration), executed against **both** target frameworks — 384 test
+  executions per CI leg. Integration tests use a real Generic Host, a real SQLite file that
+  survives restarts and a real HTTP server, including the full failure → restart → resume scenario.
+- Measured coverage: 85.4% lines, 78.3% branches, 93.9% methods.
 - CI on Linux and Windows: warnings as errors, format verification, coverage, vulnerable-dependency
   gate, sample builds and packaging.
 - 18 documents covering architecture, semantics, every subsystem, security, testing, limitations

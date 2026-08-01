@@ -237,8 +237,28 @@ kit.UseEntityFrameworkCore(db => db.UseSqlite(cs), ef => ef.AutoCreateSchema = t
 
 Registers `WorkerKitSchemaInitializer`, an `IHostedService` that calls
 `Database.EnsureCreatedAsync()` at startup and logs once at Information when it actually created the
-schema. Because it is registered from inside the `AddResilientWorkerKit` callback, it starts before
-the engine's own hosted service, so the tables exist before the first job runs.
+schema.
+
+Ordering is guaranteed, not incidental: `AddResilientWorkerKit` always registers the engine's
+hosted service **last**, after the callback has run. Anything you register from inside the
+callback to prepare durable state — this initializer, your own migration runner — therefore
+starts before the first job does. Registering a migration runner *outside* the callback, after
+`AddResilientWorkerKit` returns, puts it behind the engine and is a mistake:
+
+```csharp
+services.AddResilientWorkerKit(kit =>
+{
+    kit.UseEntityFrameworkCore(db => db.UseSqlServer(cs));
+    kit.Services.AddHostedService<MyMigrationRunner>();   // correct: runs before the engine
+    kit.AddJob<MyJob>(...);
+});
+
+services.AddHostedService<MyMigrationRunner>();           // wrong: runs after the engine starts
+```
+
+A store that is not ready when the engine starts does not corrupt anything — store failures are
+caught and logged, and the affected execution fails transiently and is retried — but the first
+executions will fail for no useful reason.
 
 `EnsureCreated` has no versioning: it creates the schema if the database has no tables and does
 nothing otherwise. It will never apply a change to an existing database, and it does not coexist

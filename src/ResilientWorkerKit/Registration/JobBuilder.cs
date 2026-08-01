@@ -65,7 +65,7 @@ public abstract class JobBuilder
             OverlapPolicy = OverlapPolicyValue,
             MisfirePolicy = misfire,
             MisfireTolerance = MisfireToleranceValue,
-            DeadLetterOnExhaustedRetries = DeadLetterFlag,
+            DeadLetterOnFailure = DeadLetterFlag,
             IdempotencyTimeToLive = IdempotencyTtl,
             HealthThresholds = Health,
         };
@@ -317,8 +317,12 @@ public sealed class JobBuilder<TJob> : JobBuilder where TJob : class, IWorkerJob
         return this;
     }
 
-    /// <summary>Writes an execution-level dead letter when retries are exhausted.</summary>
-    public JobBuilder<TJob> DeadLetterOnExhaustedRetries()
+    /// <summary>
+    /// Writes an execution-level dead letter whenever an execution ends as
+    /// <see cref="JobExecutionStatus.Failed"/> — both exhausted retries and permanent failures.
+    /// Cancelled, timed-out and abandoned executions are not dead-lettered.
+    /// </summary>
+    public JobBuilder<TJob> DeadLetterOnFailure()
     {
         DeadLetterFlag = true;
         return this;

@@ -42,8 +42,12 @@ public sealed class JobDefinition
     /// <summary>Maximum lateness for <see cref="ResilientWorkerKit.MisfirePolicy.RunIfWithinTolerance"/>.</summary>
     public TimeSpan? MisfireTolerance { get; init; }
 
-    /// <summary>Write an execution-level dead letter when retries are exhausted.</summary>
-    public bool DeadLetterOnExhaustedRetries { get; init; }
+    /// <summary>
+    /// Write an execution-level dead letter whenever an execution ends in
+    /// <see cref="JobExecutionStatus.Failed"/> — whether the retries were exhausted or the
+    /// failure was permanent from the first attempt.
+    /// </summary>
+    public bool DeadLetterOnFailure { get; init; }
 
     /// <summary>Time-to-live for idempotency records created by this job; null = no expiry.</summary>
     public TimeSpan? IdempotencyTimeToLive { get; init; }

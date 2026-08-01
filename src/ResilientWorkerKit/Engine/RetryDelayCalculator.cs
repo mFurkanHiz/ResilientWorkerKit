@@ -8,7 +8,11 @@ internal static class RetryDelayCalculator
     /// </summary>
     /// <param name="options">The retry policy.</param>
     /// <param name="retryNumber">1-based retry number (1 = first retry).</param>
-    /// <param name="retryAfterHint">Server-provided minimum delay (e.g. HTTP Retry-After); overrides the computed backoff.</param>
+    /// <param name="retryAfterHint">
+    /// Server-provided delay (e.g. an HTTP <c>Retry-After</c> header). When present it replaces
+    /// the computed backoff entirely — the server's instruction wins in both directions, and
+    /// <see cref="JobRetryOptions.MaxDelay"/> does not cap it.
+    /// </param>
     /// <param name="jitterSample">A uniform random sample in [0,1); injectable for tests.</param>
     public static TimeSpan Compute(JobRetryOptions options, int retryNumber, TimeSpan? retryAfterHint, double jitterSample)
     {
@@ -19,7 +23,6 @@ internal static class RetryDelayCalculator
 
         var exponent = Math.Max(0, retryNumber - 1);
         var raw = options.BaseDelay.TotalMilliseconds * Math.Pow(options.BackoffMultiplier, exponent);
-        raw = Math.Min(raw, options.MaxDelay.TotalMilliseconds);
 
         if (options.JitterFactor > 0)
         {
@@ -28,7 +31,8 @@ internal static class RetryDelayCalculator
             raw *= factor;
         }
 
-        raw = Math.Clamp(raw, 0, options.MaxDelay.TotalMilliseconds * (1 + options.JitterFactor));
+        // Clamped last, so MaxDelay is a true ceiling rather than a pre-jitter cap.
+        raw = Math.Clamp(raw, 0, options.MaxDelay.TotalMilliseconds);
         return TimeSpan.FromMilliseconds(raw);
     }
 }

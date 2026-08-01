@@ -303,7 +303,7 @@ internal sealed class JobRunner
                 break;
         }
 
-        if (finalStatus == JobExecutionStatus.Failed && definition.DeadLetterOnExhaustedRetries)
+        if (finalStatus == JobExecutionStatus.Failed && definition.DeadLetterOnFailure)
         {
             var deadLetter = new DeadLetterRecord
             {

@@ -45,10 +45,37 @@ public class RetryDelayCalculatorTests
     }
 
     [Fact]
-    public void RetryAfterHint_OverridesComputedBackoff()
+    public void MaxDelay_IsATrueCeiling_EvenWithJitter()
     {
-        var delay = RetryDelayCalculator.Compute(Options(), 1, TimeSpan.FromSeconds(45), 0.5);
-        Assert.Equal(TimeSpan.FromSeconds(45), delay);
+        var options = Options(jitter: 0.2);
+
+        // Retry 5 would compute 32 s before the cap; the upward jitter must not push the
+        // result past MaxDelay.
+        var delay = RetryDelayCalculator.Compute(options, 5, null, jitterSample: 1.0);
+
+        Assert.Equal(options.MaxDelay, delay);
+        Assert.True(delay <= options.MaxDelay);
+    }
+
+    [Fact]
+    public void RetryAfterHint_ReplacesComputedBackoff_InBothDirections()
+    {
+        // Longer than the backoff…
+        Assert.Equal(TimeSpan.FromSeconds(45),
+            RetryDelayCalculator.Compute(Options(), 1, TimeSpan.FromSeconds(45), 0.5));
+
+        // …and shorter: the server's instruction wins either way.
+        Assert.Equal(TimeSpan.FromMilliseconds(200),
+            RetryDelayCalculator.Compute(Options(), 4, TimeSpan.FromMilliseconds(200), 0.5));
+    }
+
+    [Fact]
+    public void RetryAfterHint_IsNotCappedByMaxDelay()
+    {
+        // A server asking for 5 minutes is honored even though MaxDelay is 30 s: the server
+        // knows something the client does not.
+        var delay = RetryDelayCalculator.Compute(Options(), 1, TimeSpan.FromMinutes(5), 0.5);
+        Assert.Equal(TimeSpan.FromMinutes(5), delay);
     }
 
     [Fact]

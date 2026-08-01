@@ -3,8 +3,9 @@ namespace ResilientWorkerKit;
 /// <summary>Result of classifying an exception thrown by a job execution.</summary>
 /// <param name="Kind">The failure category.</param>
 /// <param name="RetryAfter">
-/// Optional minimum delay before the next retry attempt (e.g. parsed from an HTTP
-/// <c>Retry-After</c> header). Overrides the computed backoff when longer.
+/// Optional delay before the next retry attempt (e.g. parsed from an HTTP <c>Retry-After</c>
+/// header). When present it replaces the computed backoff entirely, whether it is longer or
+/// shorter, because the server's instruction is the better information.
 /// </param>
 public readonly record struct JobFailureClassification(JobFailureKind Kind, TimeSpan? RetryAfter = null)
 {

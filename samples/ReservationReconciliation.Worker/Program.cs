@@ -48,7 +48,7 @@ builder.Services.AddResilientWorkerKit(kit =>
             r.MaxRetries = 3;
             r.BaseDelay = TimeSpan.FromSeconds(2);
         })
-        .DeadLetterOnExhaustedRetries());
+        .DeadLetterOnFailure());
 
     kit.AddJob<NotificationDispatchJob>("notification-dispatch", job => job
         .WithFixedDelay(TimeSpan.FromMinutes(1))

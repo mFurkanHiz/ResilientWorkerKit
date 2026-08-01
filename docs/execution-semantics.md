@@ -64,16 +64,25 @@ deployments need Phase 2's distributed locking; see [limitations.md](limitations
 
 `JobFailureKind`: `Transient`, `Permanent`, `Cancelled`, `TimedOut`, `Abandoned`, `Misconfigured`.
 
-The default classifier resolves, in order:
+Classification happens in two stages. **`JobRunner` decides cancellation questions first**,
+because only it knows which token fired:
 
-1. `OperationCanceledException` when the shutdown/manual token fired → `Cancelled`
-2. `OperationCanceledException`/`TimeoutException` when the timeout token fired → `TimedOut` (total) or `Transient` (attempt)
-3. Any exception implementing `IJobFailureHint` → the hint's kind (+ optional `RetryAfter`)
-4. `JobConfigurationException` → `Misconfigured` (never retried)
+1. `OperationCanceledException` while the host's stopping token is signalled → `Cancelled`
+2. `OperationCanceledException` while the total-timeout token is signalled → `TimedOut`
+3. `OperationCanceledException` while only the attempt-timeout token is signalled → `Transient`
+   (so the attempt is retried)
+
+Everything else goes to `IJobFailureClassifier`. The default implementation resolves, in order:
+
+1. Any exception implementing `IJobFailureHint` → the hint's kind and optional `RetryAfter`.
+   This is how `TransientJobException`, `PermanentJobException`, `JobConfigurationException`
+   (→ `Misconfigured`) and the HTTP package's `ApiRequestException` are all resolved.
+2. `OperationCanceledException` → `Cancelled`
+3. `HttpRequestException` with a status code → `Transient` for 408/429/5xx, `Permanent` for other 4xx
+4. `HttpRequestException` without a status code (DNS, connection refused) → `Transient`
 5. `TimeoutException` → `Transient`
-6. `HttpRequestException` with a status code → `Transient` for 408/429/5xx, `Permanent` for other 4xx
-7. Everything else → `Transient` (a conservative default: a retry is cheap, and permanent
-   failures burn at most `MaxRetries` attempts before landing in `Failed`)
+6. Everything else → `Transient` (a conservative default: a retry is cheap, and a genuinely
+   permanent failure burns at most `MaxRetries` attempts before landing in `Failed`)
 
 Only `Transient` failures are retried.
 
@@ -87,7 +96,7 @@ Only `Transient` failures are retried.
   `Transient` → retried. Total timeout (`WithTimeout`) cancels the whole execution → `TimedOut`.
 - Each attempt is logged individually; the execution record carries the final `AttemptCount`.
 - When retries are exhausted: the execution is recorded `Failed`, an execution-level dead letter
-  is written if `DeadLetterOnExhaustedRetries()` was configured, the health tracker increments
+  is written if `DeadLetterOnFailure()` was configured, the health tracker increments
   consecutive failures — **and the host, the scheduler loop and every other job continue
   untouched**. The job runs again at its next scheduled occurrence.
 

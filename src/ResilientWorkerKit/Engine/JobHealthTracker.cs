@@ -76,6 +76,8 @@ public sealed class JobHealthTracker : IJobHealthTracker, IJobProgressReporter
             state.LastResult = status;
             state.LastDurationMs = durationMs;
 
+            // Cancelled and Abandoned count as neither success nor failure: a shutdown or a
+            // crashed process must not drive the job towards Unhealthy on its own.
             switch (status)
             {
                 case JobExecutionStatus.Completed:
@@ -87,7 +89,6 @@ public sealed class JobHealthTracker : IJobHealthTracker, IJobProgressReporter
                     state.LastFailureAtUtc = completedAtUtc;
                     state.ConsecutiveFailures++;
                     break;
-                // Cancelled/Abandoned: neither success nor counted failure.
             }
         }
     }

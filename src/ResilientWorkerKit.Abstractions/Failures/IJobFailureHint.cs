@@ -11,6 +11,9 @@ public interface IJobFailureHint
     /// <summary>The failure category this exception represents.</summary>
     JobFailureKind FailureKind { get; }
 
-    /// <summary>Optional minimum delay before the next retry attempt.</summary>
+    /// <summary>
+    /// Optional delay before the next retry attempt. When present it replaces the computed
+    /// backoff entirely (see <see cref="JobFailureClassification"/>).
+    /// </summary>
     TimeSpan? RetryAfter { get; }
 }

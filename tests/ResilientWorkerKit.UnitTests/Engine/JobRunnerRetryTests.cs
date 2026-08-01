@@ -74,7 +74,7 @@ public class JobRunnerRetryTests
 
         await harness.RunAsync(RunnerHarness.Definition(b => b
             .WithRetryCount(1)
-            .DeadLetterOnExhaustedRetries()));
+            .DeadLetterOnFailure()));
 
         var deadLetters = await harness.DeadLetters.GetPendingAsync("test-job", 10);
         var record = Assert.Single(deadLetters);

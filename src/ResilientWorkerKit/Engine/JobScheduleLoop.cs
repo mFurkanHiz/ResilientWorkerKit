@@ -192,7 +192,10 @@ internal sealed class JobScheduleLoop
     {
         try
         {
-            var recent = await _executionStore.GetRecentAsync(_def.JobId, 20, cancellationToken).ConfigureAwait(false);
+            // The window is generous because only schedule-driven records can anchor the phase:
+            // a job with a long run of manual/startup executions would otherwise lose its anchor
+            // and silently re-anchor to "now".
+            var recent = await _executionStore.GetRecentAsync(_def.JobId, 200, cancellationToken).ConfigureAwait(false);
 
             // Anchor only on schedule-driven occurrences; startup/manual runs are out-of-band
             // and must not shift the schedule phase across restarts.
@@ -362,10 +365,11 @@ internal sealed class JobScheduleLoop
             }
             else
             {
+                // Only a genuinely dropped occurrence counts as skipped; a queued one still runs.
                 JobLog.OverlappingExecutionSkipped(_logger, occurrence.ScheduledAtUtc, _def.OverlapPolicy);
+                _metrics.OverlapSkipped(_def.JobId);
             }
 
-            _metrics.OverlapSkipped(_def.JobId);
             return;
         }
 

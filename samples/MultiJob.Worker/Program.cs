@@ -23,7 +23,7 @@ builder.Services.AddResilientWorkerKit(kit =>
         })
         .WithTimeout(TimeSpan.FromSeconds(30))
         .PreventOverlappingExecutions()
-        .DeadLetterOnExhaustedRetries());
+        .DeadLetterOnFailure());
 
     kit.AddJob<DailyDigestJob>("daily-digest", job => job
         .DailyAt(new TimeOnly(2, 0), "Europe/Istanbul"));

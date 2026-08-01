@@ -211,7 +211,7 @@ public class EndToEndResumeTests
                         .RunOnStartup()
                         .WithTimeout(TimeSpan.FromSeconds(30))
                         .PreventOverlappingExecutions()
-                        .DeadLetterOnExhaustedRetries()
+                        .DeadLetterOnFailure()
                         .WithRetry(r =>
                         {
                             r.MaxRetries = 2;

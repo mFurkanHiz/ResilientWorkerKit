@@ -12,7 +12,10 @@ public sealed class JobRetryOptions
     /// <summary>Base delay of the exponential backoff. Default 2 seconds.</summary>
     public TimeSpan BaseDelay { get; set; } = TimeSpan.FromSeconds(2);
 
-    /// <summary>Upper bound of any computed backoff delay. Default 1 minute.</summary>
+    /// <summary>
+    /// Ceiling for the computed backoff delay, applied after jitter. Default 1 minute.
+    /// A server-provided <c>Retry-After</c> hint is honored as given and is not capped by this.
+    /// </summary>
     public TimeSpan MaxDelay { get; set; } = TimeSpan.FromMinutes(1);
 
     /// <summary>Backoff multiplier per attempt (delay = BaseDelay × Multiplier^(retry-1)). Default 2.0.</summary>

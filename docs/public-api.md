@@ -90,12 +90,16 @@ services.AddResilientWorkerKit(kit =>
   `WithRetryCount(int)`, `PreventOverlappingExecutions(OverlapPolicy = SkipNewExecution)`,
   `WithMisfirePolicy(MisfirePolicy, TimeSpan? tolerance = null)`,
   `WithTimeZone(string)` (default zone for schedule types that take none),
-  `DeadLetterOnExhaustedRetries()`, `Disabled()`, `WithDisplayName(string)`,
+  `DeadLetterOnFailure()`, `Disabled()`, `WithDisplayName(string)`,
   `WithHealthThresholds(Action<JobHealthThresholds>)`
 
-All configuration is validated at startup (`FailConfiguration` semantics): unknown time zones,
-day-of-month out of range, negative timeouts, duplicate JobIds, missing schedule etc. throw
-`JobConfigurationException` before the host starts running jobs.
+All configuration is validated when the registry is built, before any job runs: unknown time
+zones, day-of-month out of range, negative timeouts and retry values, two schedules on one job,
+`RunIfWithinTolerance` without a tolerance, `RescheduleFromNow` on a calendar schedule, and
+duplicate JobIds all throw `JobConfigurationException`.
+
+A job **without** a schedule is legal by design: it never fires on its own and runs only via
+`RunOnStartup()` and/or `IManualJobTrigger`.
 
 ## Store API (extension points)
 

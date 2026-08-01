@@ -15,4 +15,9 @@
     <PackageReference Include="Microsoft.Extensions.Options" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="ResilientWorkerKit.UnitTests" />
+    <InternalsVisibleTo Include="ResilientWorkerKit.IntegrationTests" />
+  </ItemGroup>
+
 </Project>

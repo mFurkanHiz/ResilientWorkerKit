@@ -1,0 +1,489 @@
+using Microsoft.EntityFrameworkCore;
+
+namespace ResilientWorkerKit.EntityFrameworkCore;
+
+/// <summary>EF Core execution-history store.</summary>
+public sealed class EfCoreJobExecutionStore : IJobExecutionStore
+{
+    private readonly IDbContextFactory<WorkerKitDbContext> _factory;
+
+    /// <summary>Creates the store.</summary>
+    public EfCoreJobExecutionStore(IDbContextFactory<WorkerKitDbContext> factory) => _factory = factory;
+
+    /// <inheritdoc />
+    public async Task CreateAsync(JobExecutionRecord record, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            db.Executions.Add(ToEntity(record));
+            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task UpdateAsync(JobExecutionRecord record, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            var entity = await db.Executions.FindAsync([record.ExecutionId], cancellationToken).ConfigureAwait(false);
+            if (entity is null)
+            {
+                db.Executions.Add(ToEntity(record));
+            }
+            else
+            {
+                Apply(record, entity);
+            }
+
+            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<JobExecutionRecord?> GetAsync(string executionId, CancellationToken cancellationToken = default)
+    {
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            var entity = await db.Executions.AsNoTracking()
+                .FirstOrDefaultAsync(e => e.ExecutionId == executionId, cancellationToken).ConfigureAwait(false);
+            return entity is null ? null : ToRecord(entity);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<JobExecutionRecord?> GetLatestAsync(string jobId, CancellationToken cancellationToken = default)
+    {
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            var entity = await db.Executions.AsNoTracking()
+                .Where(e => e.JobId == jobId)
+                .OrderByDescending(e => e.StartedAtUtc)
+                .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            return entity is null ? null : ToRecord(entity);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<JobExecutionRecord>> GetRecentAsync(string jobId, int count, CancellationToken cancellationToken = default)
+    {
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            var entities = await db.Executions.AsNoTracking()
+                .Where(e => e.JobId == jobId)
+                .OrderByDescending(e => e.StartedAtUtc)
+                .Take(count)
+                .ToListAsync(cancellationToken).ConfigureAwait(false);
+            return entities.Select(ToRecord).ToList();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> ExistsForScheduledExecutionAsync(string jobId, string scheduledExecutionId, bool completedOnly, CancellationToken cancellationToken = default)
+    {
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            var query = db.Executions.AsNoTracking()
+                .Where(e => e.JobId == jobId && e.ScheduledExecutionId == scheduledExecutionId);
+            if (completedOnly)
+            {
+                query = query.Where(e => e.Status == JobExecutionStatus.Completed);
+            }
+
+            return await query.AnyAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<int> MarkRunningAsAbandonedAsync(CancellationToken cancellationToken = default)
+    {
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            return await db.Executions
+                .Where(e => e.Status == JobExecutionStatus.Running)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(e => e.Status, JobExecutionStatus.Abandoned)
+                    .SetProperty(e => e.FailureKind, JobFailureKind.Abandoned),
+                    cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static JobExecutionEntity ToEntity(JobExecutionRecord r) => Apply(r, new JobExecutionEntity
+    {
+        ExecutionId = r.ExecutionId,
+        JobId = r.JobId,
+        ScheduledExecutionId = r.ScheduledExecutionId,
+        ScheduledAtUtc = r.ScheduledAtUtc,
+        ScheduledLocalTime = r.ScheduledLocalTime,
+        TimeZoneId = r.TimeZoneId,
+        TriggerType = r.TriggerType,
+        StartedAtUtc = r.StartedAtUtc,
+        CorrelationId = r.CorrelationId,
+        HostInstanceId = r.HostInstanceId,
+        CreatedAtUtc = r.CreatedAtUtc,
+    });
+
+    private static JobExecutionEntity Apply(JobExecutionRecord r, JobExecutionEntity e)
+    {
+        e.CompletedAtUtc = r.CompletedAtUtc;
+        e.Status = r.Status;
+        e.FailureKind = r.FailureKind;
+        e.AttemptCount = r.AttemptCount;
+        e.DurationMs = r.DurationMs;
+        e.ErrorType = r.ErrorType;
+        e.ErrorMessage = r.ErrorMessage;
+        e.ErrorDetail = r.ErrorDetail;
+        e.LastCheckpointSummary = r.LastCheckpointSummary;
+        e.UpdatedAtUtc = r.UpdatedAtUtc;
+        return e;
+    }
+
+    private static JobExecutionRecord ToRecord(JobExecutionEntity e) => new()
+    {
+        JobId = e.JobId,
+        ExecutionId = e.ExecutionId,
+        ScheduledExecutionId = e.ScheduledExecutionId,
+        ScheduledAtUtc = e.ScheduledAtUtc,
+        ScheduledLocalTime = e.ScheduledLocalTime,
+        TimeZoneId = e.TimeZoneId,
+        TriggerType = e.TriggerType,
+        StartedAtUtc = e.StartedAtUtc,
+        CompletedAtUtc = e.CompletedAtUtc,
+        Status = e.Status,
+        FailureKind = e.FailureKind,
+        AttemptCount = e.AttemptCount,
+        DurationMs = e.DurationMs,
+        ErrorType = e.ErrorType,
+        ErrorMessage = e.ErrorMessage,
+        ErrorDetail = e.ErrorDetail,
+        CorrelationId = e.CorrelationId,
+        HostInstanceId = e.HostInstanceId,
+        LastCheckpointSummary = e.LastCheckpointSummary,
+        CreatedAtUtc = e.CreatedAtUtc,
+        UpdatedAtUtc = e.UpdatedAtUtc,
+    };
+}
+
+/// <summary>EF Core checkpoint store (one row per job; the save is a single-row upsert).</summary>
+public sealed class EfCoreJobCheckpointStore : IJobCheckpointStore
+{
+    private readonly IDbContextFactory<WorkerKitDbContext> _factory;
+
+    /// <summary>Creates the store.</summary>
+    public EfCoreJobCheckpointStore(IDbContextFactory<WorkerKitDbContext> factory) => _factory = factory;
+
+    /// <inheritdoc />
+    public async Task<JobCheckpoint?> GetAsync(string jobId, CancellationToken cancellationToken = default)
+    {
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            var entity = await db.Checkpoints.AsNoTracking()
+                .FirstOrDefaultAsync(c => c.JobId == jobId, cancellationToken).ConfigureAwait(false);
+            return entity is null
+                ? null
+                : new JobCheckpoint(entity.JobId, entity.PayloadJson, entity.PayloadType, entity.UpdatedAtUtc);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task SaveAsync(JobCheckpoint checkpoint, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(checkpoint);
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            var entity = await db.Checkpoints.FindAsync([checkpoint.JobId], cancellationToken).ConfigureAwait(false);
+            if (entity is null)
+            {
+                db.Checkpoints.Add(new JobCheckpointEntity
+                {
+                    JobId = checkpoint.JobId,
+                    PayloadJson = checkpoint.PayloadJson,
+                    PayloadType = checkpoint.PayloadType,
+                    UpdatedAtUtc = checkpoint.UpdatedAtUtc,
+                });
+            }
+            else
+            {
+                entity.PayloadJson = checkpoint.PayloadJson;
+                entity.PayloadType = checkpoint.PayloadType;
+                entity.UpdatedAtUtc = checkpoint.UpdatedAtUtc;
+            }
+
+            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task DeleteAsync(string jobId, CancellationToken cancellationToken = default)
+    {
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            await db.Checkpoints.Where(c => c.JobId == jobId)
+                .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+}
+
+/// <summary>
+/// EF Core idempotency store. Concurrent acquisitions are settled by the database: the
+/// composite primary key rejects the second insert, and the <c>Version</c> concurrency token
+/// rejects the second re-acquire update.
+/// </summary>
+public sealed class EfCoreIdempotencyStore : IIdempotencyStore
+{
+    private readonly IDbContextFactory<WorkerKitDbContext> _factory;
+    private readonly TimeProvider _time;
+
+    /// <summary>Creates the store.</summary>
+    public EfCoreIdempotencyStore(IDbContextFactory<WorkerKitDbContext> factory, TimeProvider time)
+    {
+        _factory = factory;
+        _time = time;
+    }
+
+    /// <inheritdoc />
+    public async Task<IdempotencyAcquireResult> TryAcquireAsync(string jobId, string key, string executionId, DateTimeOffset? expiresAtUtc, CancellationToken cancellationToken = default)
+    {
+        var now = _time.GetUtcNow();
+
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+            await using (db.ConfigureAwait(false))
+            {
+                var existing = await db.IdempotencyRecords
+                    .FirstOrDefaultAsync(r => r.JobId == jobId && r.Key == key, cancellationToken).ConfigureAwait(false);
+
+                if (existing is null)
+                {
+                    db.IdempotencyRecords.Add(new JobIdempotencyEntity
+                    {
+                        JobId = jobId,
+                        Key = key,
+                        Status = IdempotencyStatus.Pending,
+                        ExecutionId = executionId,
+                        CreatedAtUtc = now,
+                        ExpiresAtUtc = expiresAtUtc,
+                        Version = 0,
+                    });
+
+                    try
+                    {
+                        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                        return IdempotencyAcquireResult.Acquired;
+                    }
+                    catch (DbUpdateException)
+                    {
+                        continue; // lost the insert race; re-read and re-evaluate
+                    }
+                }
+
+                var expired = existing.ExpiresAtUtc is { } expiry && expiry <= now;
+                if (!expired && existing.Status == IdempotencyStatus.Completed)
+                {
+                    return IdempotencyAcquireResult.AlreadyCompleted;
+                }
+
+                if (!expired && existing.Status == IdempotencyStatus.Pending)
+                {
+                    return existing.ExecutionId == executionId
+                        ? IdempotencyAcquireResult.Acquired
+                        : IdempotencyAcquireResult.InProgressElsewhere;
+                }
+
+                // Failed or expired: re-acquire under the concurrency token.
+                existing.Status = IdempotencyStatus.Pending;
+                existing.ExecutionId = executionId;
+                existing.ExpiresAtUtc = expiresAtUtc;
+                existing.CompletedAtUtc = null;
+                existing.Version++;
+
+                try
+                {
+                    await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                    return IdempotencyAcquireResult.Acquired;
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    continue; // lost the update race; re-read and re-evaluate
+                }
+            }
+        }
+
+        return IdempotencyAcquireResult.InProgressElsewhere;
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> ExistsCompletedAsync(string jobId, string key, CancellationToken cancellationToken = default)
+    {
+        var now = _time.GetUtcNow();
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            return await db.IdempotencyRecords.AsNoTracking().AnyAsync(r =>
+                r.JobId == jobId && r.Key == key &&
+                r.Status == IdempotencyStatus.Completed &&
+                (r.ExpiresAtUtc == null || r.ExpiresAtUtc > now), cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <inheritdoc />
+    public Task MarkCompletedAsync(string jobId, string key, CancellationToken cancellationToken = default)
+        => SetStatusAsync(jobId, key, IdempotencyStatus.Completed, cancellationToken);
+
+    /// <inheritdoc />
+    public Task MarkFailedAsync(string jobId, string key, CancellationToken cancellationToken = default)
+        => SetStatusAsync(jobId, key, IdempotencyStatus.Failed, cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<IdempotencyRecord?> GetAsync(string jobId, string key, CancellationToken cancellationToken = default)
+    {
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            var entity = await db.IdempotencyRecords.AsNoTracking()
+                .FirstOrDefaultAsync(r => r.JobId == jobId && r.Key == key, cancellationToken).ConfigureAwait(false);
+            if (entity is null)
+            {
+                return null;
+            }
+
+            return new IdempotencyRecord
+            {
+                JobId = entity.JobId,
+                Key = entity.Key,
+                Status = entity.Status,
+                ExecutionId = entity.ExecutionId,
+                CreatedAtUtc = entity.CreatedAtUtc,
+                CompletedAtUtc = entity.CompletedAtUtc,
+                ExpiresAtUtc = entity.ExpiresAtUtc,
+            };
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task RemoveAsync(string jobId, string key, CancellationToken cancellationToken = default)
+    {
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            await db.IdempotencyRecords.Where(r => r.JobId == jobId && r.Key == key)
+                .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task SetStatusAsync(string jobId, string key, IdempotencyStatus status, CancellationToken cancellationToken)
+    {
+        var now = _time.GetUtcNow();
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            var entity = await db.IdempotencyRecords
+                .FirstOrDefaultAsync(r => r.JobId == jobId && r.Key == key, cancellationToken).ConfigureAwait(false);
+            if (entity is null)
+            {
+                return;
+            }
+
+            entity.Status = status;
+            entity.CompletedAtUtc = status == IdempotencyStatus.Completed ? now : entity.CompletedAtUtc;
+            entity.Version++;
+            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+}
+
+/// <summary>EF Core dead-letter store.</summary>
+public sealed class EfCoreDeadLetterStore : IDeadLetterStore
+{
+    private readonly IDbContextFactory<WorkerKitDbContext> _factory;
+    private readonly TimeProvider _time;
+
+    /// <summary>Creates the store.</summary>
+    public EfCoreDeadLetterStore(IDbContextFactory<WorkerKitDbContext> factory, TimeProvider time)
+    {
+        _factory = factory;
+        _time = time;
+    }
+
+    /// <inheritdoc />
+    public async Task AddAsync(DeadLetterRecord record, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            db.DeadLetters.Add(new JobDeadLetterEntity
+            {
+                Id = record.Id,
+                JobId = record.JobId,
+                ExecutionId = record.ExecutionId,
+                Scope = record.Scope,
+                ItemId = record.ItemId,
+                FailureKind = record.FailureKind,
+                Reason = record.Reason,
+                AttemptCount = record.AttemptCount,
+                PayloadSummary = record.PayloadSummary,
+                CreatedAtUtc = record.CreatedAtUtc,
+                ReprocessedAtUtc = record.ReprocessedAtUtc,
+            });
+            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<DeadLetterRecord>> GetPendingAsync(string? jobId, int maxCount, CancellationToken cancellationToken = default)
+    {
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            var query = db.DeadLetters.AsNoTracking().Where(d => d.ReprocessedAtUtc == null);
+            if (jobId is not null)
+            {
+                query = query.Where(d => d.JobId == jobId);
+            }
+
+            var entities = await query.OrderBy(d => d.CreatedAtUtc).Take(maxCount)
+                .ToListAsync(cancellationToken).ConfigureAwait(false);
+
+            return entities.Select(e => new DeadLetterRecord
+            {
+                Id = e.Id,
+                JobId = e.JobId,
+                ExecutionId = e.ExecutionId,
+                Scope = e.Scope,
+                ItemId = e.ItemId,
+                FailureKind = e.FailureKind,
+                Reason = e.Reason,
+                AttemptCount = e.AttemptCount,
+                PayloadSummary = e.PayloadSummary,
+                CreatedAtUtc = e.CreatedAtUtc,
+                ReprocessedAtUtc = e.ReprocessedAtUtc,
+            }).ToList();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task MarkReprocessedAsync(string id, CancellationToken cancellationToken = default)
+    {
+        var now = _time.GetUtcNow();
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            await db.DeadLetters.Where(d => d.Id == id)
+                .ExecuteUpdateAsync(s => s.SetProperty(d => d.ReprocessedAtUtc, now), cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+}

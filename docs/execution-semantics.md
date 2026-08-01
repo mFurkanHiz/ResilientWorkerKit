@@ -100,6 +100,15 @@ Only `Transient` failures are retried.
   consecutive failures — **and the host, the scheduler loop and every other job continue
   untouched**. The job runs again at its next scheduled occurrence.
 
+### Write ordering guarantee
+
+Side records are written **before** the execution record reaches its terminal status. Observing
+an execution as `Failed` therefore guarantees that its dead letter (when configured) already
+exists — a poller that reacts to failures never sees a half-written picture. The trade-off is
+the opposite window: a crash between the two writes leaves a dead letter whose execution is
+still `Running`, and startup recovery then marks that execution `Abandoned`. Duplicate-but-
+visible is the safer failure mode here than silent-and-missing.
+
 ## Checkpoints and the transaction boundary
 
 The engine never writes checkpoints on its own; only job code decides when progress is real:

@@ -283,6 +283,29 @@ internal sealed class JobRunner
             record.ErrorDetail = Truncate(SensitiveDataMasker.MaskSecrets(finalException.ToString()), 4000);
         }
 
+        // The dead letter is written *before* the execution record reaches its terminal status,
+        // so that observing a Failed execution guarantees its dead letter already exists. The
+        // reverse order leaves a window where a reader sees the failure but not the record it
+        // needs to act on.
+        if (finalStatus == JobExecutionStatus.Failed && definition.DeadLetterOnFailure)
+        {
+            var deadLetter = new DeadLetterRecord
+            {
+                Id = Guid.NewGuid().ToString("n"),
+                JobId = definition.JobId,
+                ExecutionId = executionId,
+                Scope = "execution",
+                FailureKind = finalKind,
+                Reason = record.ErrorMessage ?? finalKind?.ToString() ?? "unknown failure",
+                AttemptCount = attempt,
+                CreatedAtUtc = completedAt,
+            };
+            await SafeStoreAsync(() => _deadLetterStore.AddAsync(deadLetter, CancellationToken.None), "AddDeadLetter", logger)
+                .ConfigureAwait(false);
+            JobLog.DeadLetterCreated(logger, "execution", null, deadLetter.Reason);
+            _metrics.DeadLetterCreated(definition.JobId);
+        }
+
         await SafeStoreAsync(() => _executionStore.UpdateAsync(record, CancellationToken.None), "UpdateExecution", logger)
             .ConfigureAwait(false);
 
@@ -303,25 +326,6 @@ internal sealed class JobRunner
             default:
                 JobLog.ExecutionFailed(logger, finalException!, finalKind ?? JobFailureKind.Permanent, attempt, durationMs);
                 break;
-        }
-
-        if (finalStatus == JobExecutionStatus.Failed && definition.DeadLetterOnFailure)
-        {
-            var deadLetter = new DeadLetterRecord
-            {
-                Id = Guid.NewGuid().ToString("n"),
-                JobId = definition.JobId,
-                ExecutionId = executionId,
-                Scope = "execution",
-                FailureKind = finalKind,
-                Reason = record.ErrorMessage ?? finalKind?.ToString() ?? "unknown failure",
-                AttemptCount = attempt,
-                CreatedAtUtc = completedAt,
-            };
-            await SafeStoreAsync(() => _deadLetterStore.AddAsync(deadLetter, CancellationToken.None), "AddDeadLetter", logger)
-                .ConfigureAwait(false);
-            JobLog.DeadLetterCreated(logger, "execution", null, deadLetter.Reason);
-            _metrics.DeadLetterCreated(definition.JobId);
         }
 
         _health.OnExecutionFinished(definition.JobId, finalStatus, completedAt, durationMs);

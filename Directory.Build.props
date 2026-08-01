@@ -38,7 +38,8 @@
 
   <ItemGroup Condition="$(MSBuildProjectDirectory.Contains('src'))">
     <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
-    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+    <!-- SourceLink needs a git remote; enabled in CI only to keep local builds warning-free. -->
+    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" Condition="'$(CI)' == 'true'" />
   </ItemGroup>
 
   <!-- Samples and tests are never packed. -->

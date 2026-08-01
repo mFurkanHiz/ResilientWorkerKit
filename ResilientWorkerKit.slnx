@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/MultiJob.Worker/MultiJob.Worker.csproj" />
+    <Project Path="samples/ReservationReconciliation.Worker/ReservationReconciliation.Worker.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/ResilientWorkerKit.Abstractions/ResilientWorkerKit.Abstractions.csproj" />
+    <Project Path="src/ResilientWorkerKit.EntityFrameworkCore/ResilientWorkerKit.EntityFrameworkCore.csproj" />
+    <Project Path="src/ResilientWorkerKit.HealthChecks/ResilientWorkerKit.HealthChecks.csproj" />
+    <Project Path="src/ResilientWorkerKit.Http/ResilientWorkerKit.Http.csproj" />
+    <Project Path="src/ResilientWorkerKit/ResilientWorkerKit.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ResilientWorkerKit.IntegrationTests/ResilientWorkerKit.IntegrationTests.csproj" />
+    <Project Path="tests/ResilientWorkerKit.UnitTests/ResilientWorkerKit.UnitTests.csproj" />
+  </Folder>
+</Solution>

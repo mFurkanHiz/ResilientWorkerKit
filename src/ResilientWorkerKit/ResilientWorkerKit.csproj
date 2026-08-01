@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>ResilientWorkerKit</PackageId>
+    <Description>A lightweight reliability and execution layer for custom .NET BackgroundService jobs: scheduling (interval, fixed-delay, cron, daily, weekly, monthly, last-day-of-month, one-time), retry with failure classification, timeouts, durable checkpoints, idempotency, failure isolation, execution history, health tracking and observability.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ResilientWorkerKit.Abstractions\ResilientWorkerKit.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Cronos" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Options" />
+  </ItemGroup>
+
+</Project>

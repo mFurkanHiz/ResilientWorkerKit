@@ -1,0 +1,3 @@
+[*.cs]
+# ConfigureAwait(false) is intentionally not required in application (sample) code.
+dotnet_diagnostic.CA2007.severity = none

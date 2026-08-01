@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ResilientWorkerKit\ResilientWorkerKit.csproj" />
+    <ProjectReference Include="..\..\src\ResilientWorkerKit.EntityFrameworkCore\ResilientWorkerKit.EntityFrameworkCore.csproj" />
+    <ProjectReference Include="..\..\src\ResilientWorkerKit.HealthChecks\ResilientWorkerKit.HealthChecks.csproj" />
+    <ProjectReference Include="..\..\src\ResilientWorkerKit.Http\ResilientWorkerKit.Http.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+  </ItemGroup>
+
+</Project>

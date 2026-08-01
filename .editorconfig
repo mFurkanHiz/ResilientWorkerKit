@@ -1,0 +1,30 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+
+[*.{json,yml,yaml,props,targets,csproj,sln}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.cs]
+# Naming & style
+dotnet_sort_system_directives_first = true
+csharp_style_namespace_declarations = file_scoped:warning
+csharp_style_var_when_type_is_apparent = true:suggestion
+csharp_style_prefer_primary_constructors = false:none
+csharp_prefer_braces = true:warning
+
+# Async libraries should not capture the synchronization context.
+# (Disabled for tests/samples via nested .editorconfig files.)
+dotnet_diagnostic.CA2007.severity = warning
+
+# Structured logging correctness
+dotnet_diagnostic.CA2254.severity = warning

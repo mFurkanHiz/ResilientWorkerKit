@@ -19,7 +19,19 @@ internal sealed class LoopHarness : IAsyncDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly List<Task> _loopTasks = new();
 
-    public LoopHarness(Func<JobExecutionContext, CancellationToken, Task> body)
+    private readonly IJobExecutionStore _executionStoreForLoop;
+    private readonly IPendingOccurrenceStore _pendingStoreForLoop;
+
+    /// <param name="body">The job body.</param>
+    /// <param name="yieldingStores">
+    /// Wrap the stores so every call yields before completing. Leave this on for anything that
+    /// exercises the loop's reaction to state written by a running execution: with synchronous
+    /// stores an execution can finish inside the call that started it, which hides whether the
+    /// loop would ever have noticed on its own.
+    /// </param>
+    public LoopHarness(
+        Func<JobExecutionContext, CancellationToken, Task> body,
+        bool yieldingStores = false)
     {
         Time = new FakeTimeProvider(T0);
         Executions = new InMemoryJobExecutionStore();
@@ -30,13 +42,16 @@ internal sealed class LoopHarness : IAsyncDisposable
         Health = new JobHealthTracker();
         _metrics = new WorkerKitMetrics();
 
+        _executionStoreForLoop = yieldingStores ? new YieldingJobExecutionStore(Executions) : Executions;
+        _pendingStoreForLoop = yieldingStores ? new YieldingPendingOccurrenceStore(PendingOccurrences) : PendingOccurrences;
+
         var services = new ServiceCollection();
         services.AddScoped(_ => new DelegateJob(body));
         _serviceProvider = services.BuildServiceProvider();
 
         Runner = new JobRunner(
             _serviceProvider.GetRequiredService<IServiceScopeFactory>(),
-            Executions, Checkpoints, Idempotency, DeadLetters,
+            _executionStoreForLoop, Checkpoints, Idempotency, DeadLetters,
             new InProcessJobLockProvider(),
             new DefaultJobFailureClassifier(),
             Health, _metrics, new WorkerKitOptions(), Time);
@@ -61,7 +76,8 @@ internal sealed class LoopHarness : IAsyncDisposable
     public JobScheduleLoop StartLoop(JobDefinition definition)
     {
         var loop = new JobScheduleLoop(
-            definition, Runner, Executions, PendingOccurrences, Health, _metrics, Time, NullLogger.Instance);
+            definition, Runner, _executionStoreForLoop, _pendingStoreForLoop,
+            Health, _metrics, Time, NullLogger.Instance);
         _loopTasks.Add(loop.RunAsync(_cts.Token));
         return loop;
     }

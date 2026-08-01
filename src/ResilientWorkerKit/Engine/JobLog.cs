@@ -113,4 +113,10 @@ internal static partial class JobLog
 
     [LoggerMessage(1034, LogLevel.Information, "No follow-up retry queued: the failure was {FailureKind} and RetryPermanentFailures is disabled")]
     public static partial void FollowUpSkippedForPermanentFailure(ILogger logger, JobFailureKind failureKind);
+
+    [LoggerMessage(1035, LogLevel.Debug, "Durable {Trigger} work due {DueAtUtc:o} is waiting for the job to be free; it stays queued and is not dropped")]
+    public static partial void OutOfBandWorkDeferred(ILogger logger, DateTimeOffset dueAtUtc, string trigger);
+
+    [LoggerMessage(1036, LogLevel.Warning, "Returned {IdentityToken} to the pending queue: the job lock was unavailable, so the claimed occurrence was not executed")]
+    public static partial void OutOfBandWorkReturnedToQueue(ILogger logger, string identityToken);
 }

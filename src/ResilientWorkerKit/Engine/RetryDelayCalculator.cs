@@ -21,14 +21,29 @@ internal static class RetryDelayCalculator
             return hint < TimeSpan.Zero ? TimeSpan.Zero : hint;
         }
 
+        var baseMs = options.BaseDelay.TotalMilliseconds;
+        if (baseMs <= 0)
+        {
+            return TimeSpan.Zero;
+        }
+
         var exponent = Math.Max(0, retryNumber - 1);
-        var raw = options.BaseDelay.TotalMilliseconds * Math.Pow(options.BackoffMultiplier, exponent);
+        var raw = baseMs * Math.Pow(options.BackoffMultiplier, exponent);
 
         if (options.JitterFactor > 0)
         {
             // Uniform in [1 − jitter, 1 + jitter].
             var factor = 1 - options.JitterFactor + (2 * options.JitterFactor * jitterSample);
             raw *= factor;
+        }
+
+        // A high attempt number overflows Math.Pow to infinity long before the delay would be
+        // usable; treat any non-finite intermediate as "at the ceiling" rather than letting a
+        // NaN reach TimeSpan.FromMilliseconds, which throws. This runs inside the runner's
+        // catch block, where a throw would strand the execution record in Running.
+        if (double.IsNaN(raw) || double.IsInfinity(raw))
+        {
+            return options.MaxDelay;
         }
 
         // Clamped last, so MaxDelay is a true ceiling rather than a pre-jitter cap.

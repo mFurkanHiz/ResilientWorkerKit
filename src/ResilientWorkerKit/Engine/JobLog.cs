@@ -98,4 +98,7 @@ internal static partial class JobLog
 
     [LoggerMessage(1029, LogLevel.Error, "Scheduler loop for job {JobId} crashed unexpectedly; the job will no longer be scheduled until restart. This is a bug in ResilientWorkerKit — please report it")]
     public static partial void SchedulerLoopCrashed(ILogger logger, Exception exception, string jobId);
+
+    [LoggerMessage(1030, LogLevel.Error, "The execution pipeline for job {JobId} faulted instead of recording a result. This is a bug in ResilientWorkerKit — please report it. The scheduler continues")]
+    public static partial void RunnerFaulted(ILogger logger, Exception exception, string jobId);
 }

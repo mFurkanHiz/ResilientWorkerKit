@@ -119,12 +119,17 @@ internal sealed class JobScheduleLoop
                 JobLog.JobScheduled(_logger, n.Occurrence.ScheduledAtUtc);
             }
 
+            // The wait is scoped to this iteration. Anything that ends the iteration early — a
+            // manual trigger, a finished execution — cancels and observes the delay, so pending
+            // timers cannot accumulate and their cancellation is never left unobserved.
+            using var iterationCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
             var delayTask = next is { } upcoming
-                ? DelayUntilAsync(upcoming.Occurrence.ScheduledAtUtc, stoppingToken)
-                : Task.Delay(Timeout.InfiniteTimeSpan, _time, stoppingToken);
+                ? DelayUntilAsync(upcoming.Occurrence.ScheduledAtUtc, iterationCts.Token)
+                : Task.Delay(Timeout.InfiniteTimeSpan, _time, iterationCts.Token);
 
             // Keep a single pending channel wait across iterations: the channel is created with
             // SingleReader = true, so there must never be two concurrent WaitToReadAsync calls.
+            // It is therefore bound to stoppingToken, not to the iteration.
             _pendingTriggerWait ??= _manualTriggers.Reader.WaitToReadAsync(stoppingToken).AsTask();
             var triggerTask = _pendingTriggerWait;
 
@@ -134,14 +139,11 @@ internal sealed class JobScheduleLoop
                 waitTasks.Add(_currentRun);
             }
 
-            Task finished;
-            try
+            var finished = await Task.WhenAny(waitTasks).ConfigureAwait(false);
+
+            if (finished != delayTask)
             {
-                finished = await Task.WhenAny(waitTasks).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
+                await CancelAndObserveAsync(iterationCts, delayTask).ConfigureAwait(false);
             }
 
             if (stoppingToken.IsCancellationRequested)
@@ -151,6 +153,11 @@ internal sealed class JobScheduleLoop
 
             if (finished == triggerTask)
             {
+                if (triggerTask.IsCanceled || triggerTask.IsFaulted)
+                {
+                    break;
+                }
+
                 _pendingTriggerWait = null;
                 DrainManualTriggers(stoppingToken);
                 continue;
@@ -181,10 +188,42 @@ internal sealed class JobScheduleLoop
             }
         }
 
+        await ObserveAsync(_pendingTriggerWait).ConfigureAwait(false);
+        _pendingTriggerWait = null;
+
         // Drain: resolve queued manual triggers so callers do not hang forever.
         while (_manualTriggers.Reader.TryRead(out var pending))
         {
             pending.Accepted.TrySetCanceled(CancellationToken.None);
+        }
+    }
+
+    /// <summary>Cancels the iteration's wait and observes the resulting task so it is never left faulted-and-unread.</summary>
+    private static async Task CancelAndObserveAsync(CancellationTokenSource cts, Task delayTask)
+    {
+        await cts.CancelAsync().ConfigureAwait(false);
+        await ObserveAsync(delayTask).ConfigureAwait(false);
+    }
+
+    private static async Task ObserveAsync(Task? task)
+    {
+        if (task is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected: the wait was cancelled because the iteration ended for another reason.
+        }
+        catch (Exception)
+        {
+            // A delay/channel wait cannot fail meaningfully; observing is enough to keep the
+            // exception from surfacing as an unobserved task exception later.
         }
     }
 
@@ -408,6 +447,13 @@ internal sealed class JobScheduleLoop
                     {
                         _lastCompletedUtc = result.CompletedAtUtc;
                     }
+                }
+                else if (task.IsFaulted)
+                {
+                    // JobRunner is built never to throw, so reaching here means the engine itself
+                    // has a bug. Dropping the task would hide it as an unobserved exception —
+                    // exactly the failure mode this library exists to remove.
+                    JobLog.RunnerFaulted(_logger, task.Exception!, _def.JobId);
                 }
 
                 _runs.RemoveAt(i);

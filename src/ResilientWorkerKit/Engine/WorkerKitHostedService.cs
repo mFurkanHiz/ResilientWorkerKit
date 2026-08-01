@@ -107,11 +107,39 @@ internal sealed class WorkerKitHostedService : BackgroundService
         if (runningTasks.Count > 0)
         {
             var drain = Task.WhenAll(runningTasks);
-            var timeout = Task.Delay(_options.ShutdownGracePeriod, _time, CancellationToken.None);
+            using var timeoutCts = new CancellationTokenSource();
+            var timeout = Task.Delay(_options.ShutdownGracePeriod, _time, timeoutCts.Token);
             var first = await Task.WhenAny(drain, timeout).ConfigureAwait(false);
             allFinished = first == drain;
+
+            if (allFinished)
+            {
+                // Stop the grace timer and observe it, so shutdown leaves nothing pending.
+                await timeoutCts.CancelAsync().ConfigureAwait(false);
+                await ObserveAsync(timeout).ConfigureAwait(false);
+
+                // Observe the drained executions too: JobRunner is built never to throw, so a
+                // fault here is an engine bug that must be logged rather than silently dropped.
+                await ObserveAsync(drain).ConfigureAwait(false);
+            }
         }
 
         JobLog.ShutdownCompleted(_logger, allFinished);
+    }
+
+    private async Task ObserveAsync(Task task)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected when a wait is cancelled because the other branch won.
+        }
+        catch (Exception ex)
+        {
+            JobLog.RunnerFaulted(_logger, ex, "(shutdown drain)");
+        }
     }
 }

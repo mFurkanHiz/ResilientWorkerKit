@@ -126,6 +126,8 @@ public class EndToEndResumeTests
             var failure = (await host.HistoryAsync(SyncJobId)).First(r => r.Status == JobExecutionStatus.Failed);
 
             // 429 → retried (attempt 2), 400 → permanent, so exactly 2 attempts and no more.
+            // This assertion is also the canary for store-readiness bugs: an engine that starts
+            // before its schema exists fails an extra attempt here without making an HTTP call.
             Assert.Equal(2, failure.AttemptCount);
             Assert.Equal(JobFailureKind.Permanent, failure.FailureKind);
             Assert.Equal(2, Volatile.Read(ref calls));

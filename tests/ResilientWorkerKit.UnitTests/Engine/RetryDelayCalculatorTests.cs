@@ -69,6 +69,37 @@ public class RetryDelayCalculatorTests
             RetryDelayCalculator.Compute(Options(), 4, TimeSpan.FromMilliseconds(200), 0.5));
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(100)]
+    [InlineData(2000)]   // Math.Pow(2, 1999) overflows to infinity
+    public void ExtremeAttemptNumbers_StayFiniteAndBounded(int retryNumber)
+    {
+        var options = Options(jitter: 0.2);
+
+        var delay = RetryDelayCalculator.Compute(options, retryNumber, null, jitterSample: 1.0);
+
+        Assert.InRange(delay, TimeSpan.Zero, options.MaxDelay);
+    }
+
+    [Fact]
+    public void ZeroBaseDelay_WithHighAttemptNumber_DoesNotProduceNaN()
+    {
+        // 0 * infinity is NaN, and TimeSpan.FromMilliseconds(NaN) throws — inside the runner's
+        // catch block, which would strand the execution record in Running.
+        var options = new JobRetryOptions
+        {
+            BaseDelay = TimeSpan.Zero,
+            MaxDelay = TimeSpan.FromSeconds(30),
+            BackoffMultiplier = 2.0,
+            JitterFactor = 0.2,
+        };
+
+        var delay = RetryDelayCalculator.Compute(options, retryNumber: 2000, null, jitterSample: 0.5);
+
+        Assert.Equal(TimeSpan.Zero, delay);
+    }
+
     [Fact]
     public void RetryAfterHint_IsNotCappedByMaxDelay()
     {

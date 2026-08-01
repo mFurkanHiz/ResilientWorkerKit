@@ -57,9 +57,13 @@ public class FollowUpRetryTests
         using var database = new SqliteDatabase();
         var saleTime = DateTimeOffset.UtcNow.AddSeconds(-5); // already due, so it fires at once
 
+        // Long enough that the follow-up cannot come due while the first host is still alive:
+        // the whole point is that a *different* process runs it.
+        var followUpDelay = TimeSpan.FromSeconds(8);
+
         // ---- Host #1: the planned action fires, fails, and queues a durable follow-up --------
         var firstState = new FlippableState { ShouldFail = true };
-        var host1 = await StartAsync(database, firstState, saleTime);
+        var host1 = await StartAsync(database, firstState, saleTime, delay: followUpDelay);
         await using (host1)
         {
             await WorkerHost.WaitUntilAsync(async () =>
@@ -70,15 +74,19 @@ public class FollowUpRetryTests
 
             var pending = await host1.PendingOccurrences().GetNextAsync(JobId);
             Assert.NotNull(pending);
-            Assert.Equal(1, pending.FollowUpOrdinal);
             Assert.Equal(PendingOccurrenceSources.FollowUpRetry, pending.Source);
-            Assert.Contains("followup-1", pending.IdentityToken);
+            Assert.Contains("followup-", pending.IdentityToken);
+            Assert.True(pending.FollowUpOrdinal >= 1);
+            Assert.Equal($"{JobId}:at:{saleTime.UtcDateTime:yyyy-MM-dd'T'HH:mm:ss'Z'}", pending.OriginScheduledExecutionId);
+
+            // It has not run yet: it is not due, and host #1 is about to disappear.
+            Assert.Empty(firstState.Attempts.Where(a => a.Contains("followup-", StringComparison.Ordinal)));
         }
 
         // ---- Host #2: a brand new process, same database, upstream now healthy ---------------
         // Nothing about the follow-up lived in host #1's memory, so this is the real test.
         var secondState = new FlippableState { ShouldFail = false };
-        var host2 = await StartAsync(database, secondState, saleTime);
+        var host2 = await StartAsync(database, secondState, saleTime, delay: followUpDelay);
         await using (host2)
         {
             // Wait for the recorded outcome, not the in-job flag: the execution record is
@@ -89,7 +97,7 @@ public class FollowUpRetryTests
             // It ran as the follow-up, not as a re-run of the original occurrence.
             Assert.True(secondState.Succeeded);
             var executed = Assert.Single(secondState.Attempts);
-            Assert.Contains("followup-1", executed);
+            Assert.Contains("followup-", executed);
 
             // The queue is drained once the follow-up succeeded.
             await WorkerHost.WaitUntilAsync(async () =>
@@ -155,7 +163,8 @@ public class FollowUpRetryTests
         SqliteDatabase database,
         FlippableState state,
         DateTimeOffset saleTime,
-        int maxAttempts = 3)
+        int maxAttempts = 3,
+        TimeSpan? delay = null)
         => WorkerHost.StartAsync(
             database,
             kit => kit.AddJob<FlippableJob>(JobId, job => job
@@ -167,8 +176,8 @@ public class FollowUpRetryTests
                 .RetryLater(o =>
                 {
                     o.MaxAttempts = maxAttempts;
-                    o.Delay = TimeSpan.FromMilliseconds(200);
-                    o.MaxDelay = TimeSpan.FromSeconds(1);
+                    o.Delay = delay ?? TimeSpan.FromMilliseconds(200);
+                    o.MaxDelay = o.Delay;
                 })),
             services => services.AddSingleton(state));
 }

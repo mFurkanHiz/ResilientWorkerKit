@@ -4,14 +4,18 @@ Two things matter here: how ResilientWorkerKit itself is tested, and how you tes
 
 ## How the kit is tested
 
-| Suite | Count | What it exercises |
-|---|---|---|
-| `ResilientWorkerKit.UnitTests` | 169 | Pure schedule math, retry math, failure classification, the runner and the schedule loop against in-memory stores with a fake clock, HTTP handlers, health evaluation, registration validation |
-| `ResilientWorkerKit.IntegrationTests` | 13 | A real Generic Host, real DI scopes, a real SQLite file that survives host restarts, and a real HTTP server |
+| Suite | What it exercises |
+|---|---|
+| `ResilientWorkerKit.UnitTests` | Pure schedule math, retry math, failure classification, the runner and the schedule loop against in-memory stores with a fake clock, HTTP handlers, health evaluation, registration validation |
+| `ResilientWorkerKit.IntegrationTests` | A real Generic Host, real DI scopes, a real SQLite file that survives host restarts, and a real HTTP server |
 
 Both projects multi-target `net10.0` and `net8.0`, so every test runs twice — once per supported
 framework, against framework-matched dependency versions. Claiming a target framework without
 executing anything on it is not support.
+
+Counts and coverage are deliberately not repeated here: the
+[CI runs](https://github.com/mFurkanHiz/ResilientWorkerKit/actions/workflows/ci.yml) are the
+source of truth, and a number typed into a document is only correct until the next commit.
 
 ```bash
 dotnet test                                          # everything

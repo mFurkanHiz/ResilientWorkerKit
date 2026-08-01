@@ -377,7 +377,8 @@ Windows. A supported target framework that never executes a test is a claim, not
 Schedule and engine tests run on `FakeTimeProvider`, so a month of scheduling is verified in
 milliseconds — the whole suite finishes in about ten seconds.
 
-Measured coverage across the five library assemblies, as reported by CI on the last run
+Coverage across the five library assemblies is published by CI to Codecov on every push — the
+badge above is that number, not a figure typed into this file. At the last measurement
 (coverlet, Release build): **86.1% lines, 79% branches, 94.1% methods**. The uncovered remainder
 is mostly log-message plumbing and defensive store-failure paths. The full HTML report is
 published as a CI artifact on every run.

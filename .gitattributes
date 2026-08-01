@@ -1,3 +1,9 @@
-* text=auto
+# Normalize to LF in the repository *and* in every working tree, so the LF rule in
+# .editorconfig holds identically on Linux and Windows and `dotnet format --verify-no-changes`
+# agrees on both.
+* text=auto eol=lf
+
 *.png binary
+*.jpg binary
+*.ico binary
 *.snk binary

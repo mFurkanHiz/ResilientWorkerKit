@@ -6,8 +6,12 @@ Two things matter here: how ResilientWorkerKit itself is tested, and how you tes
 
 | Suite | Count | What it exercises |
 |---|---|---|
-| `ResilientWorkerKit.UnitTests` | 165 | Pure schedule math, retry math, failure classification, the runner and the schedule loop against in-memory stores with a fake clock, HTTP handlers, health evaluation, registration validation |
+| `ResilientWorkerKit.UnitTests` | 169 | Pure schedule math, retry math, failure classification, the runner and the schedule loop against in-memory stores with a fake clock, HTTP handlers, health evaluation, registration validation |
 | `ResilientWorkerKit.IntegrationTests` | 13 | A real Generic Host, real DI scopes, a real SQLite file that survives host restarts, and a real HTTP server |
+
+Both projects multi-target `net10.0` and `net8.0`, so every test runs twice — once per supported
+framework, against framework-matched dependency versions. Claiming a target framework without
+executing anything on it is not support.
 
 ```bash
 dotnet test                                          # everything

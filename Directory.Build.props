@@ -47,10 +47,16 @@
     <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" Condition="'$(CI)' == 'true'" />
   </ItemGroup>
 
-  <!-- Samples and tests are never packed and build for the current LTS only. -->
-  <PropertyGroup Condition="$(MSBuildProjectDirectory.Contains('samples')) or $(MSBuildProjectDirectory.Contains('tests'))">
+  <!--
+    Tests run against both target frameworks, so the net8.0 leg of the libraries is actually
+    executed rather than merely compiled. Samples build for the current LTS only.
+  -->
+  <PropertyGroup Condition="$(MSBuildProjectDirectory.Contains('samples'))">
     <TargetFrameworks></TargetFrameworks>
     <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$(MSBuildProjectDirectory.Contains('samples')) or $(MSBuildProjectDirectory.Contains('tests'))">
     <IsPackable>false</IsPackable>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>

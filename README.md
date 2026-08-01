@@ -5,7 +5,7 @@
 [![CI](https://github.com/mFurkanHiz/ResilientWorkerKit/actions/workflows/ci.yml/badge.svg)](https://github.com/mFurkanHiz/ResilientWorkerKit/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET](https://img.shields.io/badge/.NET-10.0%20%7C%208.0-512BD4)](https://dotnet.microsoft.com/download/dotnet/10.0)
-[![Tests](https://img.shields.io/badge/tests-182%20passing-brightgreen)](#tests)
+[![Tests](https://img.shields.io/badge/tests-182%20%C3%97%202%20TFMs-brightgreen)](#tests)
 [![Coverage](https://img.shields.io/badge/coverage-86.4%25%20lines-brightgreen)](#tests)
 
 ResilientWorkerKit is a lightweight reliability and execution layer for background jobs hosted in
@@ -343,8 +343,11 @@ dotnet test
 
 | Suite | Count | Scope |
 |---|---|---|
-| Unit | 165 | Schedule math (DST gaps, ambiguous hours, leap years, invalid-day policies), retry backoff and jitter bounds, failure classification, runner execution/retry/checkpoint/idempotency, misfire and overlap policies, manual triggers, graceful shutdown, in-memory stores, health evaluation, HTTP handlers and masking, registration validation |
+| Unit | 169 | Schedule math (DST gaps, ambiguous hours, leap years, invalid-day policies), retry backoff and jitter bounds, failure classification, runner execution/retry/checkpoint/idempotency, misfire and overlap policies, manual triggers, graceful shutdown, in-memory stores, health evaluation, HTTP handlers and masking, registration validation |
 | Integration | 13 | Real Generic Host, real DI scopes, real SQLite file database that survives restarts, real HTTP server: the end-to-end failure→restart→resume scenario, `Retry-After` and permanent-400 handling, abandoned-execution recovery, monthly identity across restarts, the EF Core idempotency race, health checks through the real pipeline |
+
+Both suites run against **both target frameworks** — 364 test executions per CI leg, on Linux and
+Windows. A supported target framework that never executes a test is a claim, not a guarantee.
 
 Schedule and engine tests run on `FakeTimeProvider`, so a month of scheduling is verified in
 milliseconds — the whole suite finishes in about ten seconds.

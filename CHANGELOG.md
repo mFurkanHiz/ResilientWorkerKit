@@ -59,9 +59,9 @@ dependencies for each.
 - Per-job health checks with configurable thresholds and stuck detection.
 
 **Quality**
-- 182 tests (169 unit, 13 integration). Integration tests use a real Generic Host, a real SQLite
-  file that survives restarts and a real HTTP server, including the full
-  failure → restart → resume scenario.
+- 182 tests (169 unit, 13 integration), executed against **both** target frameworks. Integration
+  tests use a real Generic Host, a real SQLite file that survives restarts and a real HTTP server,
+  including the full failure → restart → resume scenario.
 - CI on Linux and Windows: warnings as errors, format verification, coverage, vulnerable-dependency
   gate, sample builds and packaging.
 - 18 documents covering architecture, semantics, every subsystem, security, testing, limitations

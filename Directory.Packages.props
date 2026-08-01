@@ -42,10 +42,19 @@
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.10" />
   </ItemGroup>
 
-  <!-- Samples and tests (net10.0 only) -->
-  <ItemGroup>
+  <!-- Test/sample dependencies that also need a framework-matched version -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.29" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' != 'net8.0'">
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.10" />
+  </ItemGroup>
+
+  <!-- Test tooling (framework-independent) -->
+  <ItemGroup>
     <!--
       Elevated to a direct reference to override the version EF Core's SQLite provider pulls
       transitively, which has carried high-severity advisories in the 2.1.x line.

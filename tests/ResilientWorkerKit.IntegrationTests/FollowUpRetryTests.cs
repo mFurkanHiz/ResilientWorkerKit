@@ -81,9 +81,13 @@ public class FollowUpRetryTests
         var host2 = await StartAsync(database, secondState, saleTime);
         await using (host2)
         {
-            await WorkerHost.WaitUntilAsync(async () => secondState.Succeeded);
+            // Wait for the recorded outcome, not the in-job flag: the execution record is
+            // written after the job body returns.
+            await WorkerHost.WaitUntilAsync(async () => (await host2.HistoryAsync(JobId))
+                .Any(r => r.TriggerType == "follow-up" && r.Status == JobExecutionStatus.Completed));
 
             // It ran as the follow-up, not as a re-run of the original occurrence.
+            Assert.True(secondState.Succeeded);
             var executed = Assert.Single(secondState.Attempts);
             Assert.Contains("followup-1", executed);
 
@@ -91,9 +95,8 @@ public class FollowUpRetryTests
             await WorkerHost.WaitUntilAsync(async () =>
                 await host2.PendingOccurrences().CountAsync(JobId) == 0);
 
-            var history = await host2.HistoryAsync(JobId);
-            Assert.Contains(history, r => r.TriggerType == "follow-up" && r.Status == JobExecutionStatus.Completed);
-            Assert.Contains(history, r => r.Status == JobExecutionStatus.Failed);
+            // The failure from the previous host is still on record.
+            Assert.Contains(await host2.HistoryAsync(JobId), r => r.Status == JobExecutionStatus.Failed);
         }
     }
 

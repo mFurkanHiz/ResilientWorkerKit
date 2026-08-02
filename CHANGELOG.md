@@ -5,6 +5,46 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html): from 1.0 onwards, breaking changes
 require a major version and additive capabilities a minor one.
 
+## [1.1.1] — 2026-08-02
+
+Fixes a defect that made `RetryLater` — the headline feature of 1.1.0 — not work in-process for
+any job that performs I/O. **Anyone on 1.1.0 who uses `RetryLater` should upgrade.**
+
+### Fixed
+
+- **Follow-up retries never ran until the host restarted.** The scheduler loop decides what to
+  wait for once per iteration and then sleeps, indefinitely when the schedule has no further
+  occurrences. A follow-up is queued from inside the failing execution's own task — after that
+  decision — and nothing woke the loop. The loop now waits on in-flight executions and on an
+  explicit wake signal raised whenever durable work is enqueued.
+- **A queued occurrence could be silently deleted.** Claiming a pending occurrence is a delete,
+  and it ran before the duplicate and overlap checks. An occurrence that came due while the job
+  was busy was claimed, then dropped with only a warning: no execution record, no dead letter,
+  the durable row gone. The claim now happens last, after the decision to run, and a row is
+  returned to the queue if the runner declines because the job lock was unavailable. Durable
+  out-of-band work now waits for capacity instead of being discarded by the overlap policy,
+  which governs schedule occurrences rather than planned actions.
+- **Follow-up identities grew without bound.** Each token was chained onto the previous attempt
+  (`…+followup-1+followup-2+followup-3`), which is unreadable and can overflow the
+  300-character persisted column on providers that enforce lengths, such as SQL Server. Tokens
+  are now derived from the origin occurrence and are bounded by construction.
+- **A follow-up could shift the schedule anchor**, because "came from the schedule" was inferred
+  from the presence of a claim, and the queued-behind-a-run path erased it. The distinction is
+  now explicit, so an out-of-band retry cannot make a monthly job skip a month.
+
+### Why the 1.1.0 tests did not catch it
+
+They asserted the storage provider's behaviour rather than the engine's. The follow-up tests used
+a job that threw synchronously, over a SQLite provider whose async API is implemented
+synchronously, so an execution ran start-to-finish inside the call that started it and the loop
+never had to notice the queued row. `JobScheduleLoopTests` had no coverage of the pending queue
+at all. Coverage was 86% and reported nothing, because coverage measures which lines ran, not
+whether they proved anything.
+
+The test infrastructure now makes that an explicit axis: a yielding-store decorator forces every
+store call to yield, and the loop-level tests use job bodies that await. Every fix above has a
+test that fails without it.
+
 ## [1.1.0] — 2026-08-02
 
 Planned actions: schedule something for a specific future moment, and make sure it eventually
@@ -129,5 +169,6 @@ additive (`IJobLockProvider` is already the seam) and is planned for a 1.x relea
 
 See [docs/limitations.md](docs/limitations.md) for the full list.
 
+[1.1.1]: https://github.com/mFurkanHiz/ResilientWorkerKit/releases/tag/v1.1.1
 [1.1.0]: https://github.com/mFurkanHiz/ResilientWorkerKit/releases/tag/v1.1.0
 [1.0.0]: https://github.com/mFurkanHiz/ResilientWorkerKit/releases/tag/v1.0.0

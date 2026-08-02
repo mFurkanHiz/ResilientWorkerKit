@@ -370,6 +370,19 @@ job.RetryLater(o =>
 > loses the queue with the process, which defeats the purpose — configure
 > `UseEntityFrameworkCore(...)` (see [persistence.md](persistence.md)).
 
+### What a follow-up does not disturb
+
+- **It never moves the schedule.** An out-of-band retry cannot change when the next scheduled
+  occurrence is due, so a failure in August cannot make a monthly job skip September.
+- **It is never dropped by the overlap policy.** If the job is busy when a follow-up comes due,
+  the occurrence stays queued and runs when capacity frees up. The overlap policy governs
+  schedule occurrences — deciding whether a *recurring* run may be skipped — not planned actions
+  that exist because they must happen.
+- **It is never lost to a lock.** The queue row is claimed only once the engine has decided to
+  run it, and returned to the queue if the job lock turns out to be unavailable.
+- **Its identity stays bounded.** Each follow-up is identified as `<origin>+followup-<n>`,
+  derived from the original occurrence rather than chained onto the previous retry.
+
 ## Dead letters
 
 Two distinct mechanisms write to the same store. They are not interchangeable.

@@ -366,13 +366,15 @@ record survived in SQLite. Details in the [sample README](samples/ReservationRec
 dotnet test
 ```
 
-| Suite | Count | Scope |
-|---|---|---|
-| Unit | 205 | Schedule math (DST gaps, ambiguous hours, leap years, invalid-day policies), retry backoff and jitter bounds, failure classification, runner execution/retry/checkpoint/idempotency, misfire and overlap policies, manual triggers, graceful shutdown, in-memory stores, health evaluation, HTTP handlers and masking, registration validation |
-| Integration | 16 | Real Generic Host, real DI scopes, real SQLite file database that survives restarts, real HTTP server: the end-to-end failure→restart→resume scenario, `Retry-After` and permanent-400 handling, abandoned-execution recovery, monthly identity across restarts, the EF Core idempotency race, health checks through the real pipeline |
+| Suite | Scope |
+|---|---|
+| Unit | Schedule math (DST gaps, ambiguous hours, leap years, invalid-day policies), retry backoff and jitter bounds, failure classification, runner execution/retry/checkpoint/idempotency, misfire and overlap policies, follow-up scheduling, manual triggers, graceful shutdown, in-memory stores, health evaluation, HTTP handlers and masking, registration validation |
+| Integration | Real Generic Host, real DI scopes, real SQLite file database that survives restarts, real HTTP server: the end-to-end failure→restart→resume scenario, in-process follow-up retries, `Retry-After` and permanent-400 handling, abandoned-execution recovery, monthly identity across restarts, the EF Core idempotency race, health checks through the real pipeline |
 
-Both suites run against **both target frameworks** — 442 test executions per CI leg, on Linux and
-Windows. A supported target framework that never executes a test is a claim, not a guarantee.
+Both suites run against **both target frameworks**, on Linux and Windows — four legs per push. A
+supported target framework that never executes a test is a claim, not a guarantee. Counts live in
+the [CI runs](https://github.com/mFurkanHiz/ResilientWorkerKit/actions/workflows/ci.yml) rather
+than in this file, for the same reason the coverage badge does.
 
 Schedule and engine tests run on `FakeTimeProvider`, so a month of scheduling is verified in
 milliseconds — the whole suite finishes in about ten seconds.
@@ -385,6 +387,16 @@ published as a CI artifact on every run.
 
 Both the Linux and Windows legs run the whole suite, which is how the write-ordering issue in
 `JobRunner` was caught: it only reproduced on the slower Windows runner.
+
+**Where the tests were not good enough, and what changed.** 1.1.0 shipped `RetryLater` with a
+defect its own tests could not see: they used a job that threw synchronously over a SQLite
+provider whose async API is synchronous, so an execution finished inside the call that started
+it and the scheduler never had to notice the queued follow-up. Any job doing real I/O awaits, and
+for those the retry never ran until the process restarted. Coverage was 86% and said nothing —
+coverage measures which lines ran, not whether they proved anything. The suite now has a
+yielding-store decorator and job bodies that await, so "the provider completed synchronously" is
+an axis a test chooses rather than one it inherits. Details in
+[CHANGELOG](CHANGELOG.md#111--2026-08-02).
 
 ## Documentation
 

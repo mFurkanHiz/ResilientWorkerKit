@@ -207,9 +207,17 @@ job.AtLocalTimes("Europe/Istanbul",
 job.Repeating(DateTimeOffset.Parse("2026-08-15T07:00:00Z"), every: TimeSpan.FromHours(4), count: 3);
 ```
 
-Instants are sorted and de-duplicated; the order you pass them in does not matter. Each one is a
-separate occurrence with identity `at:<instant>`, so a completed instant is never repeated after a
-restart, and the schedule returns `null` once the last one has been handled.
+Instants are sorted; the order you pass them in does not matter. Each one is a separate
+occurrence with identity `at:<instant>` (second precision), so a completed instant is never
+repeated after a restart, and the schedule returns `null` once the last one has been handled.
+
+Two inputs **fail fast** with a `JobConfigurationException` instead of being silently absorbed:
+the exact same instant twice (a duplicate is a configuration mistake, not a request to run
+twice), and two distinct instants inside the same UTC second (they would share an identity, and
+the second would be silently skipped as already completed — the worst possible way to find
+out). `Repeating` requires a gap of at least one second for the same reason, computes its
+occurrences lazily — a count of a billion costs nothing at registration — and rejects a
+progression that would run past the end of representable time.
 
 `AtLocalTimes` resolves through the same daylight-saving rules as every other calendar schedule
 (see [Local → UTC conversion and DST](#local--utc-conversion-and-dst)).

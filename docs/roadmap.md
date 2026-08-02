@@ -1,12 +1,15 @@
 # Roadmap
 
-v0.1 is deliberately small: the reliability primitives, done properly, with honest documentation.
-Everything below is a candidate for later versions, ordered by how much it unblocks.
+The Core is deliberately small: the reliability primitives, done properly, with honest
+documentation. Everything below is a candidate for later versions, ordered by how much it
+unblocks.
 
 ## Phase 2 — multi-instance safety
 
 **Distributed lock providers.** The highest-value gap: today overlap protection is in-process, so
-a second host instance can double-execute. `IJobLockProvider` already exists as the seam.
+a second host instance can double-execute. `IJobLockProvider` already exists as the seam, and
+since 2.0 the pending-occurrence queue already demonstrates the pattern (database-arbitrated
+leases with expiry takeover and owner tokens) — for that one capability only.
 
 - A SQL Server provider using application locks (`sp_getapplock`) or a lease table.
 - A generic relational lease provider (lease row + expiry + fencing token) so PostgreSQL/MySQL
@@ -16,8 +19,9 @@ a second host instance can double-execute. `IJobLockProvider` already exists as 
   (see [limitations.md](limitations.md)).
 
 **Multi-instance execution store semantics.** Occurrence-identity duplicate suppression already
-works across processes because it is a database check; it needs a test suite that runs two hosts
-concurrently against one database.
+works across processes because it is a database check, but it is check-then-act; making it
+atomic — and running a two-host test suite against one database — is what would let the engine
+claim more than a single active instance.
 
 ## Phase 2 — operability
 
@@ -26,8 +30,8 @@ concurrently against one database.
 `GET /worker-kit/jobs` and `GET /worker-kit/executions` with pluggable authorization.
 
 **Pause and resume.** Runtime enable/disable per job, persisted, so operators can stop a
-misbehaving job without a deployment. Requires a small amount of durable job state, which v0.1
-deliberately avoids.
+misbehaving job without a deployment. Requires a small amount of durable job state, which the
+Core deliberately avoids.
 
 **Dead-letter reprocessing.** `IDeadLetterStore.MarkReprocessedAsync` exists but nothing drives
 it. A reprocessing helper (re-run a job scoped to a set of dead-lettered item ids) would close
@@ -39,8 +43,8 @@ idempotency records and reprocessed dead letters on a configurable retention win
 ## Phase 2 — persistence
 
 - **PostgreSQL sample and CI coverage** (the EF Core model is already provider-agnostic).
-- **SQL Server integration tests** in CI to back the compatibility claim with evidence rather
-  than design intent.
+- ~~SQL Server integration tests in CI~~ — done since 2.0: the store contract suite runs
+  against a SQL Server service container on the Linux CI leg.
 - **Bulk-friendly idempotency APIs** — batch `TryAcquire`/`MarkCompleted` to cut round trips for
   jobs processing thousands of items per page.
 
@@ -69,7 +73,9 @@ These stay out regardless of demand, because they change what the library *is*:
 - Distributed workflow orchestration, sagas, compensation (that is Temporal/Durable Task).
 - A job queue with enqueue-from-anywhere semantics (that is Hangfire).
 - Clustering with leader election as a core feature (Quartz territory).
-- Storing job *definitions* in the database — schedules stay in code and in version control.
+- Storing job *definitions* in the database — for the **Core package**, schedules stay in code
+  and in version control. Runtime-defined schedules are intentionally outside the Core package
+  and are developed through optional Dynamic Scheduling packages in the same repository.
 
 ## NuGet publication
 

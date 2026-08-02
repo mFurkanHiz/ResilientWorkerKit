@@ -172,27 +172,95 @@ Occurrences planned durably rather than derived from a schedule. Today that mean
 retries (`RetryLater`); the shape is deliberately general so runtime-created triggers can reuse
 the table without a schema change.
 
-Primary key: `Id`. Index: `(JobId, DueAtUtc)` — the scheduler asks for "the earliest pending
-occurrence for this job" on every loop iteration.
+Primary key: `Id`. Indexes: `(JobId, DueAtUtc)` — the scheduler asks for "the earliest pending
+occurrence for this job" on every loop iteration — and a **unique** `(JobId, IdentityToken)`,
+which makes the database the arbiter of "this logical occurrence is already queued": two
+processes planning the same follow-up cannot double-queue it.
 
 | Column | Type | Max length | Notes |
 |---|---|---|---|
-| `Id` | string | 64 | **PK** |
-| `JobId` | string | 200 | required |
+| `Id` | string | 64 | **PK**; opaque |
+| `JobId` | string | 200 | required; unique with `IdentityToken` |
 | `DueAtUtc` | DateTime | | UTC; when it becomes runnable |
 | `IdentityToken` | string | 300 | required; e.g. `at:2026-08-15T07:00:00Z+followup-1` |
 | `Source` | string | 32 | required; `follow-up-retry` |
 | `OriginScheduledExecutionId` | string? | 300 | the occurrence being retried |
 | `FollowUpOrdinal` | int | | 1-based |
-| `PayloadJson` | string? | | unused by follow-up retries; reserved |
+| `PayloadJson` | string? | | **write-only today**: stored and carried, read by nothing. Reserved for future runtime triggers, which will define their own schema-versioned, size-limited, validated payload model — this column is not that feature. Must never contain secrets or personal data. |
 | `CreatedAtUtc` | DateTime | | UTC |
+| `LeaseOwner` | string? | 200 | host holding the lease; null = unleased |
+| `LeaseToken` | string? | 64 | proof of ownership, known only to the acquirer |
+| `ClaimedAtUtc` | DateTime? | | UTC; when the lease was acquired |
+| `LeaseExpiresAtUtc` | DateTime? | | UTC; past this instant the row is acquirable again |
 
-**Claiming is a delete.** `TryClaimAsync` issues `ExecuteDelete` and treats "rows affected > 0"
-as having won the occurrence, so the database picks the single winner. That keeps the semantics
-correct if a second host instance is ever added, ahead of full distributed locking.
+**Execution is under a lease, and only completion deletes.** 1.x claimed a row by deleting it,
+which left a window — after the delete, before the first durable execution record — where a
+crash lost the planned action permanently. Now:
 
-Rows are removed when claimed, so the table stays small: it holds only occurrences that are
-waiting, never history. A follow-up that ran leaves its trace in `WorkerKitExecutions` instead.
+1. `TryAcquireLeaseAsync` is a conditional `UPDATE` (`WHERE` unleased-or-expired); the rows-
+   affected count makes the database pick a single winner, and the returned token is the proof
+   of ownership every later operation must present.
+2. While the execution runs, the engine renews the lease at a third of its duration
+   (`WorkerKitOptions.PendingOccurrenceLeaseDuration`, default 5 minutes), so a live run never
+   loses its lease.
+3. `CompleteAsync` — a conditional `DELETE` on `(Id, LeaseToken)` — runs only after the
+   execution outcome is durably recorded *and* any next follow-up is durably queued. If the
+   process dies anywhere before that, the lease expires and the occurrence is delivered again.
+4. Recovery is **visibility-based**: `GetNextAsync` surfaces a leased row no earlier than its
+   lease expiry, so a scheduler sleeps exactly until a dead owner's work becomes acquirable —
+   no background sweeper, no polling loop.
+
+This makes the pending-occurrence capability itself safe for multiple hosts sharing one
+database (single lease winner, expiry takeover, owner-checked complete/release — the store
+contract test suite runs identically against the in-memory store, SQLite and SQL Server). It
+does **not** make the engine as a whole multi-instance safe; see
+[limitations.md](limitations.md).
+
+Two operational notes:
+
+- **Clock discipline.** Stores never read a clock; `nowUtc` is always a parameter supplied
+  from the host's `TimeProvider`. Hosts sharing one database must keep their clocks within a
+  third of the lease duration (the renewal interval) of each other — with the 5-minute
+  default, ordinary NTP is far more than enough.
+- **Re-delivery is at-least-once by contract.** A crash mid-execution means the same
+  occurrence runs again after expiry. The completed-identity check prevents re-running
+  anything that recorded completion; everything else is the documented at-least-once model,
+  which is why job bodies must be idempotent.
+
+Rows are removed on completion, so the table stays small: it holds only occurrences that are
+waiting or in flight, never history. A follow-up that ran leaves its trace in
+`WorkerKitExecutions` instead.
+
+#### Migrating from 1.1.x
+
+The 2.0 schema adds the four nullable lease columns and the unique `(JobId, IdentityToken)`
+index. 1.1.x could legitimately hold duplicate `(JobId, IdentityToken)` pairs (its
+lock-declined path re-inserted rows under fresh ids), so **deduplicate before creating the
+unique index** — keep the earliest row per pair:
+
+```sql
+ALTER TABLE WorkerKitPendingOccurrences ADD LeaseOwner nvarchar(200) NULL;
+ALTER TABLE WorkerKitPendingOccurrences ADD LeaseToken nvarchar(64) NULL;
+ALTER TABLE WorkerKitPendingOccurrences ADD ClaimedAtUtc datetime2 NULL;
+ALTER TABLE WorkerKitPendingOccurrences ADD LeaseExpiresAtUtc datetime2 NULL;
+
+DELETE p FROM WorkerKitPendingOccurrences p
+JOIN (
+    SELECT JobId, IdentityToken, MIN(CreatedAtUtc) AS KeepCreatedAtUtc
+    FROM WorkerKitPendingOccurrences
+    GROUP BY JobId, IdentityToken
+    HAVING COUNT(*) > 1
+) d ON d.JobId = p.JobId AND d.IdentityToken = p.IdentityToken
+WHERE p.CreatedAtUtc > d.KeepCreatedAtUtc;
+
+CREATE UNIQUE INDEX IX_WorkerKitPendingOccurrences_JobId_IdentityToken
+    ON WorkerKitPendingOccurrences (JobId, IdentityToken);
+```
+
+(SQL Server syntax; adapt types for other providers — SQLite demos using
+`AutoCreateSchema` recreate the schema and need nothing.) EF Core migration users get the same
+result from `dotnet ef migrations add`, but must add the deduplication `DELETE` to the
+generated migration by hand — the tooling cannot know which duplicate to keep.
 
 ## Why timestamps are `DateTime`, not `DateTimeOffset`
 

@@ -9,7 +9,8 @@ Status values: **proposed** (analysis written, not yet final), **accepted** (bin
 
 ## D-007 — Core version for the next release: 2.0.0
 
-**Status:** proposed — finalized only when the D-001 implementation is complete and verified.
+**Status:** accepted — the D-001 implementation is complete; the lease contract replaced
+`IPendingOccurrenceStore`'s claim-as-delete shape, which is a breaking public API change.
 
 With D-001 choosing a breaking reshape of `IPendingOccurrenceStore`, SemVer requires a major
 version. 1.1.2 (patch) cannot hold an API/schema change; 1.2.0 (minor) would require carrying

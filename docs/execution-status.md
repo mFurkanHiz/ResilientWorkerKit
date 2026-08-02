@@ -6,37 +6,46 @@ session reads [master-plan.md](master-plan.md), this file, and
 
 ## Current stage
 
-**Stage 1 — Core hardening** (branch `core-hardening-2.x`), approved on 2026-08-02 with
-binding corrections; see the stage 1 section of the master plan.
+**Stage 1 — Core hardening** (branch `core-hardening-2.x`): implementation complete, in final
+verification. The stage gate report goes to the owner next; stage 2 starts only on
+`DEVAM: SONRAKİ AŞAMAYA GEÇ`.
 
 ## Completed
 
-- Stage 0 read-only audit: presented and accepted (2026-08-02).
-- Governance documents created (this commit).
-- Decisions D-001 … D-007 analysed and recorded in the decision log; D-001 (lease contract,
-  option A) and D-002 (crash-during-execution semantics) are the load-bearing ones.
+- Governance documents; decisions D-001…D-007 recorded, all now **accepted** (D-001 lease
+  contract option A; D-002 crash semantics incl. the review amendments; D-003 unique-index
+  identity arbitration; D-004 explicit-times fail-fast; D-005 lazy `RepeatingSchedule`;
+  D-006 SQL Server proven in CI; D-007 version 2.0.0).
+- Pre-implementation adversarial design review (4 attack lenses + refutation pass): one
+  blocking finding (complete-after-failed-planning loses the chain) and one serious finding
+  (decision-log/self-contradiction) — both folded into the design before code was written.
+- Lease model implemented end to end: contract, in-memory + EF Core stores, engine
+  integration (acquire → heartbeat → outcome-gated complete / release), decline cooldown,
+  cancelled-run release, stale-row cleanup, `ContinueAfterAbandoned` opt-in recovery.
+- Explicit-times validation, lazy `RepeatingSchedule`, builder/misfire wiring.
+- Tests: store lease contract suite × {in-memory, SQLite, SQL Server (env-gated)}, engine
+  lease suite (11 scenarios incl. crash re-delivery, heartbeat, planning-failure retention),
+  crashed-process SQLite integration test; all pre-existing suites green on both TFMs.
+- CI: SQL Server service container on the Linux leg; `EnablePackageValidation`; version
+  2.0.0; documentation consistency pass (stale v0.1 references, claim-as-delete wording,
+  multi-instance boundary, migration SQL with dedup step, PayloadJson write-only note);
+  CHANGELOG 2.0.0 entry.
 
 ## In progress
 
-- Lease-model implementation: store contract reshape, in-memory + EF Core stores, engine
-  integration (acquire → run → renew → complete/release), expired-lease re-delivery.
-- Explicit-times duplicate/collision validation; `Repeating` lazy schedule.
-- Test suites: lease lifecycle, two-store single-winner, expiry recovery, owner-token checks,
-  crash/restart integration, SQL Server (env-var-gated).
+- Final full verification (build, format, both TFMs, pack) and the stage 1 exit report.
 
 ## Blockers
 
-- None. (SQL Server tests cannot run on the local machine — no Docker; they are executed by
-  the CI Linux leg's service container and skip locally by design.)
+- None. SQL Server tests skip locally (no Docker on this machine) by design; the CI Linux leg
+  executes them.
 
 ## Last verified state
 
-- Base: v1.1.1 (`212f852`), CI green on ubuntu/windows × net8.0/net10.0.
-- This branch: not yet pushed; test state recorded here after each local full run.
+- Local: unit 235 × 2 TFMs green; integration 43 green + 12 SQL-Server-skipped × 2 TFMs;
+  `dotnet format` clean. CI run on this branch: pending push.
 
 ## Next step
 
-Implement D-001/D-002/D-004/D-005 test-first; then documentation consistency (stale v0.1
-references, PayloadJson wording, multi-instance boundary), package validation, CI SQL Server
-service; full local verification; push branch and run CI via workflow_dispatch; stage 1 exit
-report; **stop for the stage gate**.
+Push the branch, run CI (workflow_dispatch), adversarial code review of the full diff, then
+the stage 1 exit report — and **stop at the stage gate**.

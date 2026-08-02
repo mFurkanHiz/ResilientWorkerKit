@@ -347,9 +347,19 @@ When an execution ends `Failed` and the job has a follow-up policy:
 3. The scheduler loop treats the pending queue and the schedule as equals: whichever is due first
    is what runs next. On startup the queue is read from the store, which is why a follow-up
    queued by a process that no longer exists still runs.
-4. Claiming an occurrence deletes its row, so exactly one runner can win it.
+4. The occurrence is executed under a revocable **lease**: acquired atomically (the database
+   picks a single winner, so two hosts cannot run the same row), renewed while the run is in
+   flight, and the row is deleted only after the execution outcome is durably recorded and any
+   next follow-up is durably queued. If the process dies at any point before that, the lease
+   expires and the occurrence is delivered again — see [persistence.md](persistence.md) for
+   the exact mechanics.
 5. When the ordinal would exceed `MaxAttempts`, nothing more is queued and an **Error** is logged:
    *"Follow-up retries exhausted after N attempt(s)"*.
+
+Re-delivery makes the follow-up path **at-least-once by contract**: a crash mid-execution
+re-runs the same ordinal, and only an idempotent job body makes that safe — which is the
+library's standing requirement, not a new one. The completed-identity check still guarantees an
+occurrence that recorded completion never runs twice.
 
 ### Permanent failures
 
@@ -378,10 +388,44 @@ job.RetryLater(o =>
   the occurrence stays queued and runs when capacity frees up. The overlap policy governs
   schedule occurrences — deciding whether a *recurring* run may be skipped — not planned actions
   that exist because they must happen.
-- **It is never lost to a lock.** The queue row is claimed only once the engine has decided to
-  run it, and returned to the queue if the job lock turns out to be unavailable.
+- **It is never lost to a lock.** The lease is acquired only once the engine has decided to
+  run, and released — making the row immediately acquirable again — if the job lock turns out
+  to be unavailable.
+- **It is never lost to a shutdown.** A run cancelled by a graceful shutdown releases its
+  lease instead of completing: cancellation is a non-terminal outcome for a planned action,
+  and the occurrence is delivered again on the next start (or by another host).
+- **Its chain cannot end silently.** If the next follow-up cannot be written durably (a
+  transient store outage at exactly the wrong moment), the current row is deliberately *not*
+  completed: its lease lapses, the occurrence re-delivers at the same ordinal, and re-planning
+  is idempotent — the unique `(JobId, IdentityToken)` index turns a second write into a no-op.
 - **Its identity stays bounded.** Each follow-up is identified as `<origin>+followup-<n>`,
   derived from the original occurrence rather than chained onto the previous retry.
+
+### When the process crashes mid-execution
+
+Two cases, deliberately different:
+
+- **A follow-up execution** (any pending-sourced run) is backed by its durable row. The lease
+  expires and the same ordinal runs again — no policy needed; queuing durable work *was* the
+  opt-in for at-least-once re-delivery.
+- **The origin execution** has no row: its record is marked `Abandoned` at the next start, and —
+  as everywhere else in the engine — an attempted occurrence is not silently re-executed,
+  because the external call may have succeeded with its response unobserved. If the chain
+  matters more than the duplicate risk, opt in:
+
+```csharp
+job.RetryLater(o =>
+{
+    o.MaxAttempts = 3;
+    o.Delay = TimeSpan.FromMinutes(5);
+    o.ContinueAfterAbandoned = true; // requires an idempotent job body
+});
+```
+
+With the opt-in, per-job recovery finds recent origin executions that ended `Abandoned` (or
+`Failed` without their first follow-up written — the narrow crash window between the two
+writes) and queues follow-up 1, once, database-arbitrated. A `Cancelled` origin is *not*
+resumed: cancellation is an explicit, recorded decision, not a crash.
 
 ## Dead letters
 

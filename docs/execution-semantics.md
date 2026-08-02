@@ -56,9 +56,10 @@ Rules:
 | `TimedOut` | Total execution timeout elapsed (attempt timeouts surface as transient failures first) |
 | `Abandoned` | Record was still `Running` when a new host started ⇒ the previous process died mid-run |
 
-`Abandoned` marking happens during startup recovery. Since v0.1 assumes a single active host
-instance, any `Running` record found at startup belongs to a dead process. (Multi-instance
-deployments need Phase 2's distributed locking; see [limitations.md](limitations.md).)
+`Abandoned` marking happens during startup recovery. The engine assumes a single active host
+instance, so any `Running` record found at startup belongs to a dead process. (Multi-instance
+deployments need distributed locking and lease-aware recovery; see
+[limitations.md](limitations.md).)
 
 ## Failure classification
 
@@ -106,8 +107,10 @@ Only `Transient` failures are retried.
 during that window loses it, and for a one-time or explicit-time schedule the occurrence is then
 gone for good. `RetryLater` closes that gap by queueing a **new** occurrence in the pending
 store, which a later process picks up. The queued occurrence carries identity
-`<origin>+followup-<n>`, so duplicate suppression still applies, and claiming it is a delete so
-exactly one runner wins. See [failure-handling.md](failure-handling.md#retry-now-vs-retry-later).
+`<origin>+followup-<n>`, so duplicate suppression still applies, and it executes under an
+atomically acquired lease, so exactly one runner wins — and a runner that dies loses the lease
+rather than the occurrence. See
+[failure-handling.md](failure-handling.md#retry-now-vs-retry-later).
 
 ### Write ordering guarantee
 

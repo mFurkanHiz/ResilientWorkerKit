@@ -1,4 +1,6 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using ResilientWorkerKit.EntityFrameworkCore;
 using ResilientWorkerKit.IntegrationTests.Infrastructure;
 
 namespace ResilientWorkerKit.IntegrationTests;
@@ -72,7 +74,7 @@ public class FollowUpRetryTests
             await WorkerHost.WaitUntilAsync(async () =>
                 await host1.PendingOccurrences().CountAsync(JobId) >= 1);
 
-            var pending = await host1.PendingOccurrences().GetNextAsync(JobId);
+            var pending = await host1.PendingOccurrences().GetNextAsync(JobId, DateTimeOffset.UtcNow);
             Assert.NotNull(pending);
             Assert.Equal(PendingOccurrenceSources.FollowUpRetry, pending.Source);
             Assert.Contains("followup-", pending.IdentityToken);
@@ -105,6 +107,55 @@ public class FollowUpRetryTests
 
             // The failure from the previous host is still on record.
             Assert.Contains(await host2.HistoryAsync(JobId), r => r.Status == JobExecutionStatus.Failed);
+        }
+    }
+
+    [Fact]
+    public async Task ALeasedRow_FromACrashedProcess_RunsOnTheNextHost()
+    {
+        using var database = new SqliteDatabase();
+
+        // Simulate the exact crash window the lease model exists for: a previous process
+        // acquired the occurrence and died before recording any outcome. Under 1.1.x the
+        // claim was a delete and this action was gone for good; now the expired lease makes
+        // it acquirable, and a brand-new process must pick it up and run it.
+        var factory = new TestDbContextFactory(
+            new DbContextOptionsBuilder<WorkerKitDbContext>()
+                .UseSqlite(database.ConnectionString)
+                .Options);
+        var db = factory.CreateDbContext();
+        await using (db)
+        {
+            await db.Database.EnsureCreatedAsync();
+            db.PendingOccurrences.Add(new JobPendingOccurrenceEntity
+            {
+                Id = "crashed-row",
+                JobId = JobId,
+                DueAtUtc = DateTime.UtcNow.AddMinutes(-10),
+                IdentityToken = "at:2026-08-15T07:00:00Z+followup-1",
+                Source = PendingOccurrenceSources.FollowUpRetry,
+                OriginScheduledExecutionId = $"{JobId}:at:2026-08-15T07:00:00Z",
+                FollowUpOrdinal = 1,
+                CreatedAtUtc = DateTime.UtcNow.AddMinutes(-15),
+                LeaseOwner = "crashed-host:12345",
+                LeaseToken = "dead-token",
+                ClaimedAtUtc = DateTime.UtcNow.AddMinutes(-10),
+                LeaseExpiresAtUtc = DateTime.UtcNow.AddMinutes(-5),
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var state = new FlippableState { ShouldFail = false };
+        var host = await StartAsync(database, state, DateTimeOffset.UtcNow.AddDays(30)); // schedule stays quiet
+        await using (host)
+        {
+            await WorkerHost.WaitUntilAsync(async () => (await host.HistoryAsync(JobId))
+                .Any(r => r.TriggerType == "follow-up" && r.Status == JobExecutionStatus.Completed));
+            await WorkerHost.WaitUntilAsync(async () => await host.PendingOccurrences().CountAsync(JobId) == 0);
+
+            Assert.True(state.Succeeded);
+            var executed = Assert.Single(state.Attempts);
+            Assert.Contains("followup-1", executed);
         }
     }
 

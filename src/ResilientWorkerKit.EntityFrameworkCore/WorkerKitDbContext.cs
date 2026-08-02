@@ -100,9 +100,16 @@ public static class WorkerKitModelBuilderExtensions
             entity.Property(e => e.IdentityToken).HasMaxLength(300).IsRequired();
             entity.Property(e => e.Source).HasMaxLength(32).IsRequired();
             entity.Property(e => e.OriginScheduledExecutionId).HasMaxLength(300);
+            entity.Property(e => e.LeaseOwner).HasMaxLength(200);
+            entity.Property(e => e.LeaseToken).HasMaxLength(64);
             // The scheduler asks for "the earliest pending occurrence for this job" on every
             // loop iteration, so that lookup gets its own covering index.
             entity.HasIndex(e => new { e.JobId, e.DueAtUtc });
+            // One row per logical occurrence: the database arbitrates "already queued", so two
+            // processes planning the same follow-up cannot double-queue it. Nonclustered, so
+            // the 500-character worst case stays inside SQL Server's 1700-byte key limit.
+            // Migrating a 1.1.x table? Deduplicate first — see docs/persistence.md.
+            entity.HasIndex(e => new { e.JobId, e.IdentityToken }).IsUnique();
         });
 
         modelBuilder.Entity<JobDeadLetterEntity>(entity =>

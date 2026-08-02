@@ -29,9 +29,19 @@ internal sealed class LoopHarness : IAsyncDisposable
     /// stores an execution can finish inside the call that started it, which hides whether the
     /// loop would ever have noticed on its own.
     /// </param>
+    /// <param name="wrapPendingStore">
+    /// Optional extra decorator around the pending store the loop sees — for fault-injection
+    /// tests (for example, a store whose AddAsync fails on demand).
+    /// </param>
+    /// <param name="lockProvider">
+    /// Optional job-lock provider; defaults to the in-process one. Tests use a denying stub to
+    /// reach the runner-declined path, which a single in-process loop cannot produce naturally.
+    /// </param>
     public LoopHarness(
         Func<JobExecutionContext, CancellationToken, Task> body,
-        bool yieldingStores = false)
+        bool yieldingStores = false,
+        Func<IPendingOccurrenceStore, IPendingOccurrenceStore>? wrapPendingStore = null,
+        IJobLockProvider? lockProvider = null)
     {
         Time = new FakeTimeProvider(T0);
         Executions = new InMemoryJobExecutionStore();
@@ -44,6 +54,10 @@ internal sealed class LoopHarness : IAsyncDisposable
 
         _executionStoreForLoop = yieldingStores ? new YieldingJobExecutionStore(Executions) : Executions;
         _pendingStoreForLoop = yieldingStores ? new YieldingPendingOccurrenceStore(PendingOccurrences) : PendingOccurrences;
+        if (wrapPendingStore is not null)
+        {
+            _pendingStoreForLoop = wrapPendingStore(_pendingStoreForLoop);
+        }
 
         var services = new ServiceCollection();
         services.AddScoped(_ => new DelegateJob(body));
@@ -52,7 +66,7 @@ internal sealed class LoopHarness : IAsyncDisposable
         Runner = new JobRunner(
             _serviceProvider.GetRequiredService<IServiceScopeFactory>(),
             _executionStoreForLoop, Checkpoints, Idempotency, DeadLetters,
-            new InProcessJobLockProvider(),
+            lockProvider ?? new InProcessJobLockProvider(),
             new DefaultJobFailureClassifier(),
             Health, _metrics, new WorkerKitOptions(), Time);
     }
@@ -73,11 +87,14 @@ internal sealed class LoopHarness : IAsyncDisposable
 
     public JobRunner Runner { get; }
 
+    /// <summary>Options handed to the loop; adjust before StartLoop when a test needs to.</summary>
+    public WorkerKitOptions Options { get; } = new();
+
     public JobScheduleLoop StartLoop(JobDefinition definition)
     {
         var loop = new JobScheduleLoop(
             definition, Runner, _executionStoreForLoop, _pendingStoreForLoop,
-            Health, _metrics, Time, NullLogger.Instance);
+            Health, _metrics, Options, Time, NullLogger.Instance);
         _loopTasks.Add(loop.RunAsync(_cts.Token));
         return loop;
     }
@@ -88,7 +105,8 @@ internal sealed class LoopHarness : IAsyncDisposable
         DateTimeOffset scheduledAtUtc,
         JobExecutionStatus status = JobExecutionStatus.Completed,
         string triggerType = "schedule",
-        string? identityToken = null)
+        string? identityToken = null,
+        JobFailureKind? failureKind = null)
     {
         var token = identityToken
             ?? scheduledAtUtc.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture);
@@ -103,8 +121,43 @@ internal sealed class LoopHarness : IAsyncDisposable
             CreatedAtUtc = scheduledAtUtc,
             Status = status,
             TriggerType = triggerType,
+            FailureKind = failureKind,
         };
         return Executions.CreateAsync(record);
+    }
+
+    /// <summary>Queues a pending occurrence, optionally pre-leased (e.g. by a "dead" host).</summary>
+    public async Task<PendingOccurrence> SeedPendingAsync(
+        string jobId,
+        string identityToken,
+        DateTimeOffset dueAtUtc,
+        int followUpOrdinal = 1,
+        string? leaseOwner = null,
+        DateTimeOffset? leaseAcquiredAtUtc = null,
+        TimeSpan? leaseDuration = null)
+    {
+        var row = new PendingOccurrence
+        {
+            Id = Guid.NewGuid().ToString("n"),
+            JobId = jobId,
+            DueAtUtc = dueAtUtc,
+            IdentityToken = identityToken,
+            OriginScheduledExecutionId = $"{jobId}:{identityToken.Split('+')[0]}",
+            FollowUpOrdinal = followUpOrdinal,
+            CreatedAtUtc = dueAtUtc.AddMinutes(-5),
+        };
+        Assert.True(await PendingOccurrences.AddAsync(row));
+
+        if (leaseOwner is not null)
+        {
+            var token = await PendingOccurrences.TryAcquireLeaseAsync(
+                row.Id, leaseOwner,
+                leaseDuration ?? TimeSpan.FromMinutes(5),
+                leaseAcquiredAtUtc ?? dueAtUtc);
+            Assert.NotNull(token);
+        }
+
+        return row;
     }
 
     /// <summary>Waits (real time, bounded) for a condition without advancing virtual time.</summary>

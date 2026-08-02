@@ -37,6 +37,22 @@ public sealed class FollowUpRetryOptions
     /// </summary>
     public bool RetryPermanentFailures { get; set; }
 
+    /// <summary>
+    /// Also start the follow-up chain when the <em>original</em> execution ended without a
+    /// recorded outcome — its record was marked <see cref="JobFailureKind.Abandoned"/> because
+    /// the process died mid-run, or it recorded a failure but crashed before the first
+    /// follow-up was durably queued. Default false.
+    /// <para>
+    /// Off by default because an abandoned run may have completed its side effect with the
+    /// response unobserved: continuing the chain re-executes the job, and only an idempotent
+    /// job body makes that safe. Enable it when "must eventually happen" outweighs the
+    /// duplicate-side-effect risk — and pair it with the checkpoint/idempotency primitives.
+    /// Follow-up executions themselves do not need this option: they are backed by a durable
+    /// occurrence row whose lease simply expires and re-delivers if the process dies mid-run.
+    /// </para>
+    /// </summary>
+    public bool ContinueAfterAbandoned { get; set; }
+
     /// <summary>Computes the delay before the given 1-based follow-up.</summary>
     public TimeSpan DelayFor(int followUpOrdinal)
     {

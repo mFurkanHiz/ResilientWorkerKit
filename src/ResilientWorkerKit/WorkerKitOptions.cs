@@ -37,4 +37,13 @@ public sealed class WorkerKitOptions
     /// Default zero (decide immediately).
     /// </summary>
     public TimeSpan LockAcquireTimeout { get; set; } = TimeSpan.Zero;
+
+    /// <summary>
+    /// How long a pending-occurrence lease lasts before it can be taken over. The engine
+    /// renews the lease at a third of this duration while the execution runs, so a live run
+    /// never loses its lease; the duration only matters for how quickly a *crashed* host's
+    /// work becomes acquirable again. Default 5 minutes. Must comfortably exceed clock skew
+    /// between hosts sharing one store (see docs/persistence.md).
+    /// </summary>
+    public TimeSpan PendingOccurrenceLeaseDuration { get; set; } = TimeSpan.FromMinutes(5);
 }

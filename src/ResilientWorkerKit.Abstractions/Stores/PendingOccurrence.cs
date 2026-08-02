@@ -44,6 +44,22 @@ public sealed class PendingOccurrence
 
     /// <summary>When the occurrence was queued (UTC).</summary>
     public required DateTimeOffset CreatedAtUtc { get; init; }
+
+    /// <summary>
+    /// Identity of the host currently holding the lease, or null when unleased. Informational
+    /// (diagnostics and logs); the lease itself is proven by the token, which is known only to
+    /// the acquirer and is deliberately not part of this record.
+    /// </summary>
+    public string? LeaseOwner { get; init; }
+
+    /// <summary>When the current lease was acquired (UTC), or null when unleased.</summary>
+    public DateTimeOffset? ClaimedAtUtc { get; init; }
+
+    /// <summary>
+    /// When the current lease expires (UTC), or null when unleased. An occurrence whose lease
+    /// has expired is acquirable again — that is the crash-recovery guarantee.
+    /// </summary>
+    public DateTimeOffset? LeaseExpiresAtUtc { get; init; }
 }
 
 /// <summary>Well-known <see cref="PendingOccurrence.Source"/> values.</summary>

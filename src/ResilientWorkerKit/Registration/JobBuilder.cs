@@ -105,7 +105,7 @@ public abstract class JobBuilder
 
         // A planned one-off action is scheduled because it must happen; silently skipping it
         // because the host was down at that minute is the wrong default.
-        OneTimeSchedule or ExplicitTimesSchedule => MisfirePolicy.RunImmediatelyOnce,
+        OneTimeSchedule or ExplicitTimesSchedule or RepeatingSchedule => MisfirePolicy.RunImmediatelyOnce,
 
         _ => MisfirePolicy.Skip,
     };
@@ -125,7 +125,8 @@ public abstract class JobBuilder
         }
 
         var isCalendar = Schedule is CronSchedule or DailySchedule or WeeklySchedule
-            or MonthlySchedule or LastDayOfMonthSchedule or OneTimeSchedule or ExplicitTimesSchedule;
+            or MonthlySchedule or LastDayOfMonthSchedule or OneTimeSchedule
+            or ExplicitTimesSchedule or RepeatingSchedule;
         if (policy == MisfirePolicy.RescheduleFromNow && isCalendar)
         {
             throw new JobConfigurationException(
@@ -323,25 +324,16 @@ public sealed class JobBuilder<TJob> : JobBuilder where TJob : class, IWorkerJob
 
     /// <summary>
     /// Runs a fixed number of times, starting at <paramref name="startAt"/> and repeating
-    /// every <paramref name="every"/>. Sugar over <see cref="AtTimes(DateTimeOffset[])"/> for
-    /// "three times on the 15th, four hours apart".
+    /// every <paramref name="every"/> — "three times on the 15th, four hours apart".
+    /// Occurrences are computed on demand, so the count has no practical upper bound.
     /// </summary>
     /// <param name="startAt">The first instant.</param>
-    /// <param name="every">Gap between instants; must be positive.</param>
-    /// <param name="count">Total number of runs; must be at least one.</param>
+    /// <param name="every">Gap between instants; at least one second (occurrence identity has second precision).</param>
+    /// <param name="count">Total number of runs; at least one.</param>
     public JobBuilder<TJob> Repeating(DateTimeOffset startAt, TimeSpan every, int count)
     {
-        if (every <= TimeSpan.Zero)
-        {
-            throw new JobConfigurationException($"Job '{JobId}': the repeat interval must be positive, got {every}.");
-        }
-
-        if (count < 1)
-        {
-            throw new JobConfigurationException($"Job '{JobId}': the repeat count must be at least 1, got {count}.");
-        }
-
-        return AtTimes(Enumerable.Range(0, count).Select(i => startAt + (every * i)));
+        SetSchedule(new RepeatingSchedule(startAt, every, count));
+        return this;
     }
 
     /// <summary>Uses a custom <see cref="IJobSchedule"/> implementation.</summary>

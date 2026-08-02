@@ -16,15 +16,20 @@ public sealed class ExplicitTimesSchedule : IJobSchedule
 {
     private readonly DateTimeOffset[] _times;
 
-    /// <summary>Creates the schedule from at least one instant. Duplicates are collapsed and order does not matter.</summary>
-    /// <exception cref="JobConfigurationException">No instants were supplied.</exception>
+    /// <summary>Creates the schedule from at least one instant. Order does not matter.</summary>
+    /// <exception cref="JobConfigurationException">
+    /// No instants were supplied, an instant appears more than once, or two distinct instants
+    /// fall within the same UTC second. A planned action must run or fail loudly; both
+    /// duplicate cases would otherwise lose an occurrence silently — a duplicate by collapsing
+    /// it, a same-second pair because occurrence identity has second precision, so the second
+    /// instant would be skipped as already completed.
+    /// </exception>
     public ExplicitTimesSchedule(IEnumerable<DateTimeOffset> times)
     {
         ArgumentNullException.ThrowIfNull(times);
 
         _times = times
             .Select(t => t.ToUniversalTime())
-            .Distinct()
             .OrderBy(t => t)
             .ToArray();
 
@@ -33,7 +38,29 @@ public sealed class ExplicitTimesSchedule : IJobSchedule
             throw new JobConfigurationException(
                 "An explicit-times schedule needs at least one instant.");
         }
+
+        for (var i = 1; i < _times.Length; i++)
+        {
+            if (_times[i] == _times[i - 1])
+            {
+                throw new JobConfigurationException(
+                    $"The instant {_times[i]:u} appears more than once. Each instant is one " +
+                    "planned occurrence, so a duplicate is a configuration error rather than " +
+                    "a request to run twice.");
+            }
+
+            if (SecondFloor(_times[i]) == SecondFloor(_times[i - 1]))
+            {
+                throw new JobConfigurationException(
+                    $"The instants {_times[i - 1]:o} and {_times[i]:o} fall within the same " +
+                    "UTC second. Occurrence identity has second precision, so the later one " +
+                    "would be silently skipped as a duplicate; use instants at least one " +
+                    "second apart.");
+            }
+        }
     }
+
+    private static long SecondFloor(DateTimeOffset t) => t.UtcTicks / TimeSpan.TicksPerSecond;
 
     /// <summary>The configured instants, in ascending UTC order.</summary>
     public IReadOnlyList<DateTimeOffset> Times => _times;

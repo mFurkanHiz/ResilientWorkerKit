@@ -50,7 +50,7 @@ internal sealed class WorkerKitHostedService : BackgroundService
             {
                 var jobLogger = _loggerFactory.CreateLogger($"ResilientWorkerKit.Jobs.{definition.JobId}");
                 _loops[definition.JobId] = new JobScheduleLoop(
-                    definition, _runner, _executionStore, _pendingStore, _health, _metrics, _time, jobLogger);
+                    definition, _runner, _executionStore, _pendingStore, _health, _metrics, _options, _time, jobLogger);
             }
         }
     }

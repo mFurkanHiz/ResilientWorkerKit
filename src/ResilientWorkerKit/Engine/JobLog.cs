@@ -117,6 +117,24 @@ internal static partial class JobLog
     [LoggerMessage(1035, LogLevel.Debug, "Durable {Trigger} work due {DueAtUtc:o} is waiting for the job to be free; it stays queued and is not dropped")]
     public static partial void OutOfBandWorkDeferred(ILogger logger, DateTimeOffset dueAtUtc, string trigger);
 
-    [LoggerMessage(1036, LogLevel.Warning, "Returned {IdentityToken} to the pending queue: the job lock was unavailable, so the claimed occurrence was not executed")]
-    public static partial void OutOfBandWorkReturnedToQueue(ILogger logger, string identityToken);
+    [LoggerMessage(1036, LogLevel.Warning, "Released the lease on {IdentityToken} ({Reason}); the occurrence was not executed to completion and is immediately acquirable again")]
+    public static partial void OutOfBandWorkReturnedToQueue(ILogger logger, string identityToken, string reason);
+
+    [LoggerMessage(1037, LogLevel.Warning, "The lease on pending occurrence {IdentityToken} could not be renewed — another host may take it over. The run continues; its recorded outcome stands, and a duplicate execution is the documented at-least-once corner")]
+    public static partial void PendingLeaseLost(ILogger logger, string identityToken);
+
+    [LoggerMessage(1038, LogLevel.Warning, "Continuing the follow-up chain of {OriginScheduledExecutionId}: its execution ended {Status} without a durable follow-up, and ContinueAfterAbandoned is enabled. Follow-up 1 queued, due {DueAtUtc:o}")]
+    public static partial void FollowUpChainResumed(ILogger logger, string originScheduledExecutionId, JobExecutionStatus status, DateTimeOffset dueAtUtc);
+
+    [LoggerMessage(1039, LogLevel.Debug, "Pending occurrence {IdentityToken} is already queued; the durable queue enforces one row per logical occurrence")]
+    public static partial void PendingOccurrenceAlreadyQueued(ILogger logger, string identityToken);
+
+    [LoggerMessage(1040, LogLevel.Debug, "Did not acquire the lease on pending occurrence {IdentityToken}; another owner holds it")]
+    public static partial void PendingLeaseNotAcquired(ILogger logger, string identityToken);
+
+    [LoggerMessage(1041, LogLevel.Warning, "Follow-up {FollowUpOrdinal} could not be queued durably; the current occurrence row is kept so the lease can lapse and the occurrence re-delivers instead of the chain being lost")]
+    public static partial void FollowUpWriteFailedRowRetained(ILogger logger, int followUpOrdinal);
+
+    [LoggerMessage(1042, LogLevel.Information, "Pending occurrence {IdentityToken} was already completed by an earlier execution; removing the stale row")]
+    public static partial void StalePendingOccurrenceRemoved(ILogger logger, string identityToken);
 }

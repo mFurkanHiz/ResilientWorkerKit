@@ -145,6 +145,24 @@ public sealed class JobPendingOccurrenceEntity
 
     /// <summary>Creation time (UTC).</summary>
     public DateTime CreatedAtUtc { get; set; }
+
+    /// <summary>Host currently holding the lease; null when unleased.</summary>
+    public string? LeaseOwner { get; set; }
+
+    /// <summary>
+    /// Proof of lease ownership, known only to the acquirer. Renew, complete and release are
+    /// conditional on this value, so a host that lost its lease cannot affect the row.
+    /// </summary>
+    public string? LeaseToken { get; set; }
+
+    /// <summary>When the current lease was acquired (UTC); null when unleased.</summary>
+    public DateTime? ClaimedAtUtc { get; set; }
+
+    /// <summary>
+    /// When the current lease expires (UTC); null when unleased. An expired lease makes the
+    /// row acquirable again — the crash-recovery guarantee.
+    /// </summary>
+    public DateTime? LeaseExpiresAtUtc { get; set; }
 }
 
 /// <summary>Relational row for one dead-letter record.</summary>

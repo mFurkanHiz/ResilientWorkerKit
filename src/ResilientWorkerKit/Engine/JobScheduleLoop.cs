@@ -25,7 +25,39 @@ internal sealed record NextWork(
     JobScheduleOccurrence Occurrence,
     string Trigger,
     PendingOccurrence? Pending = null,
-    bool IsOutOfBand = false);
+    bool IsOutOfBand = false)
+{
+    /// <summary>
+    /// When the loop may act on this work. Schedule work is actionable at its occurrence time.
+    /// Pending work can be pushed later without changing when it was <em>due</em>: until
+    /// another owner's lease expires, or until a decline cooldown ends.
+    /// </summary>
+    public DateTimeOffset EffectiveDueAtUtc { get; init; } = Occurrence.ScheduledAtUtc;
+}
+
+/// <summary>
+/// Proof of ownership of one pending occurrence for the duration of its execution. The token
+/// is known only to this loop; renew, complete and release are conditional on it at the store.
+/// </summary>
+internal sealed record OccurrenceLease(string Id, string Token, string IdentityToken);
+
+/// <summary>Durable outcome of planning a follow-up after a failed execution.</summary>
+internal enum FollowUpPlanOutcome
+{
+    /// <summary>No follow-up was called for (success, policy absent, kind excluded, chain exhausted).</summary>
+    NotNeeded,
+
+    /// <summary>The next follow-up exists durably — written now, or already present.</summary>
+    Planned,
+
+    /// <summary>
+    /// A follow-up was called for but could not be written durably. The caller must not
+    /// complete the current occurrence row: keeping it lets the lease lapse and the
+    /// occurrence re-deliver, which re-plans idempotently — a duplicate run is the accepted
+    /// at-least-once corner, a lost chain is not.
+    /// </summary>
+    WriteFailed,
+}
 
 /// <summary>
 /// The per-job scheduler loop: computes occurrences, applies misfire and overlap policies,
@@ -48,8 +80,15 @@ internal sealed class JobScheduleLoop
     private readonly IPendingOccurrenceStore _pendingStore;
     private readonly JobHealthTracker _health;
     private readonly WorkerKitMetrics _metrics;
+    private readonly WorkerKitOptions _options;
     private readonly TimeProvider _time;
     private readonly ILogger _logger;
+
+    /// <summary>
+    /// UTC ticks until which pending work is not re-attempted after the runner declined the
+    /// job lock — without it, release-and-recompute would spin hot on a held lock.
+    /// </summary>
+    private long _declineCooldownUntilTicks;
     private readonly Channel<ManualTriggerRequest> _manualTriggers =
         Channel.CreateUnbounded<ManualTriggerRequest>(new UnboundedChannelOptions { SingleReader = true });
 
@@ -82,6 +121,7 @@ internal sealed class JobScheduleLoop
         IPendingOccurrenceStore pendingStore,
         JobHealthTracker health,
         WorkerKitMetrics metrics,
+        WorkerKitOptions options,
         TimeProvider time,
         ILogger logger)
     {
@@ -91,6 +131,7 @@ internal sealed class JobScheduleLoop
         _pendingStore = pendingStore;
         _health = health;
         _metrics = metrics;
+        _options = options;
         _time = time;
         _logger = logger;
     }
@@ -143,7 +184,7 @@ internal sealed class JobScheduleLoop
                 LocalTimeConverter.ToLocal(now, _def.TimeZone),
                 "startup:" + now.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture));
             StartRun(occurrence, TriggerStartup, presetExecutionId: null, followUpOrdinal: 0,
-                originScheduledExecutionId: null, claimed: null, stoppingToken);
+                originScheduledExecutionId: null, lease: null, stoppingToken);
         }
 
         while (!stoppingToken.IsCancellationRequested)
@@ -280,12 +321,12 @@ internal sealed class JobScheduleLoop
             return Task.Delay(Timeout.InfiniteTimeSpan, _time, token);
         }
 
-        if (atCapacity && work.IsOutOfBand && work.Occurrence.ScheduledAtUtc <= _time.GetUtcNow())
+        if (atCapacity && work.IsOutOfBand && work.EffectiveDueAtUtc <= _time.GetUtcNow())
         {
             return Task.Delay(Timeout.InfiniteTimeSpan, _time, token);
         }
 
-        return DelayUntilAsync(work.Occurrence.ScheduledAtUtc, token);
+        return DelayUntilAsync(work.EffectiveDueAtUtc, token);
     }
 
     /// <summary>
@@ -342,6 +383,11 @@ internal sealed class JobScheduleLoop
                 .Where(r => r.CompletedAtUtc is not null)
                 .Select(r => r.CompletedAtUtc)
                 .FirstOrDefault();
+
+            if (_def.FollowUpRetry is { ContinueAfterAbandoned: true } policy)
+            {
+                await ResumeInterruptedChainsAsync(recent, policy, cancellationToken).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -350,6 +396,105 @@ internal sealed class JobScheduleLoop
         catch (Exception ex)
         {
             JobLog.StoreOperationFailed(_logger, ex, "RecoverScheduleState");
+        }
+    }
+
+    /// <summary>
+    /// Opt-in crash recovery for follow-up chains (<see cref="FollowUpRetryOptions.ContinueAfterAbandoned"/>).
+    /// Only <em>origin</em> executions need this: a follow-up execution is backed by a durable
+    /// row whose lease re-delivers it, but an origin that died mid-run — or crashed between its
+    /// failure record and the first follow-up's durable write — left no row behind, so its
+    /// chain never started. Classification is by trigger type, which is engine-assigned; a
+    /// custom schedule's identity tokens are never parsed for this. Scope is bounded by the
+    /// same recent-execution window the anchor recovery uses.
+    /// </summary>
+    private async Task ResumeInterruptedChainsAsync(
+        IReadOnlyList<JobExecutionRecord> recent,
+        FollowUpRetryOptions policy,
+        CancellationToken cancellationToken)
+    {
+        var interrupted = recent
+            .Where(r => r.TriggerType != TriggerFollowUp)
+            .GroupBy(r => r.ScheduledExecutionId, StringComparer.Ordinal)
+            .Select(g => g.OrderByDescending(r => r.StartedAtUtc).First())
+            .Where(r => r.Status is JobExecutionStatus.Abandoned or JobExecutionStatus.Failed);
+
+        foreach (var record in interrupted)
+        {
+            // Same gate as in-process planning: a deterministic failure repeats.
+            if (!policy.RetryPermanentFailures
+                && record.FailureKind is JobFailureKind.Permanent or JobFailureKind.Misconfigured)
+            {
+                continue;
+            }
+
+            var originIdentity = record.ScheduledExecutionId.StartsWith(_def.JobId + ":", StringComparison.Ordinal)
+                ? record.ScheduledExecutionId[(_def.JobId.Length + 1)..]
+                : record.ScheduledExecutionId;
+
+            // If follow-up 1 ever ran, the chain advanced on its own; nothing to resume.
+            bool chainAdvanced;
+            try
+            {
+                chainAdvanced = await _executionStore.ExistsForScheduledExecutionAsync(
+                        _def.JobId, $"{_def.JobId}:{originIdentity}+followup-1", completedOnly: false,
+                        cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Fail safe: not resuming is recoverable on the next start; blind queueing
+                // against an unreadable store is not.
+                JobLog.StoreOperationFailed(_logger, ex, "CheckFollowUpChain");
+                continue;
+            }
+
+            if (chainAdvanced)
+            {
+                continue;
+            }
+
+            var now = _time.GetUtcNow();
+            var dueAt = now + policy.DelayFor(1);
+            var added = false;
+            try
+            {
+                added = await _pendingStore.AddAsync(
+                    new PendingOccurrence
+                    {
+                        Id = Guid.NewGuid().ToString("n"),
+                        JobId = _def.JobId,
+                        DueAtUtc = dueAt,
+                        IdentityToken = $"{originIdentity}+followup-1",
+                        Source = PendingOccurrenceSources.FollowUpRetry,
+                        OriginScheduledExecutionId = record.ScheduledExecutionId,
+                        FollowUpOrdinal = 1,
+                        CreatedAtUtc = now,
+                    },
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                JobLog.StoreOperationFailed(_logger, ex, "ResumeFollowUpChain");
+            }
+
+            if (added)
+            {
+                JobLog.FollowUpChainResumed(_logger, record.ScheduledExecutionId, record.Status, dueAt);
+                _metrics.FollowUpQueued(_def.JobId);
+                SignalWake();
+            }
+            else
+            {
+                JobLog.PendingOccurrenceAlreadyQueued(_logger, $"{originIdentity}+followup-1");
+            }
         }
     }
 
@@ -368,7 +513,22 @@ internal sealed class JobScheduleLoop
             return scheduled;
         }
 
-        if (scheduled is not null && scheduled.Occurrence.ScheduledAtUtc <= pending.DueAtUtc)
+        // When the loop may act on the pending occurrence: not before it is due; not before
+        // another owner's unexpired lease would lapse; not before a decline cooldown ends.
+        var now = _time.GetUtcNow();
+        var actionableAt = pending.DueAtUtc;
+        if (pending.LeaseExpiresAtUtc is { } leaseExpiry && leaseExpiry >= now && leaseExpiry > actionableAt)
+        {
+            actionableAt = leaseExpiry;
+        }
+
+        var cooldownUntil = new DateTimeOffset(Volatile.Read(ref _declineCooldownUntilTicks), TimeSpan.Zero);
+        if (cooldownUntil > actionableAt)
+        {
+            actionableAt = cooldownUntil;
+        }
+
+        if (scheduled is not null && scheduled.Occurrence.ScheduledAtUtc <= actionableAt)
         {
             return scheduled;
         }
@@ -380,14 +540,18 @@ internal sealed class JobScheduleLoop
                 pending.IdentityToken),
             TriggerFollowUp,
             pending,
-            IsOutOfBand: true);
+            IsOutOfBand: true)
+        {
+            EffectiveDueAtUtc = actionableAt,
+        };
     }
 
     private async Task<PendingOccurrence?> GetNextPendingAsync(CancellationToken cancellationToken)
     {
         try
         {
-            return await _pendingStore.GetNextAsync(_def.JobId, cancellationToken).ConfigureAwait(false);
+            return await _pendingStore.GetNextAsync(_def.JobId, _time.GetUtcNow(), cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -541,6 +705,11 @@ internal sealed class JobScheduleLoop
         if (alreadyCompleted)
         {
             JobLog.DuplicateOccurrenceSkipped(_logger, $"{_def.JobId}:{occurrence.IdentityToken}");
+
+            // A pending row for an occurrence that already completed is stale — for example a
+            // crash landed between the terminal record and CompleteAsync. Remove it under a
+            // lease of our own, or the loop would surface it forever.
+            await RemoveStalePendingRowAsync(work.Pending, stoppingToken).ConfigureAwait(false);
             return;
         }
 
@@ -574,14 +743,18 @@ internal sealed class JobScheduleLoop
             return;
         }
 
-        // Claim last: the claim is a delete, so claiming before the checks above would destroy a
-        // durable occurrence that then turns out not to run.
+        // Lease last, after every check that could still decide not to run. Unlike 1.x's
+        // claim-as-delete, the lease is revocable: if this process dies before an execution
+        // outcome exists durably, the lease expires and the occurrence re-delivers.
+        OccurrenceLease? lease = null;
         if (work.Pending is { } pending)
         {
-            bool claimed;
+            string? token;
             try
             {
-                claimed = await _pendingStore.TryClaimAsync(pending.Id, stoppingToken).ConfigureAwait(false);
+                token = await _pendingStore.TryAcquireLeaseAsync(
+                    pending.Id, _options.HostInstanceId, _options.PendingOccurrenceLeaseDuration,
+                    _time.GetUtcNow(), stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -589,20 +762,60 @@ internal sealed class JobScheduleLoop
             }
             catch (Exception ex)
             {
-                JobLog.StoreOperationFailed(_logger, ex, "ClaimPendingOccurrence");
+                JobLog.StoreOperationFailed(_logger, ex, "AcquirePendingLease");
                 return;
             }
 
-            if (!claimed)
+            if (token is null)
             {
-                return;   // another runner won it
+                // Another owner holds it; the loop recomputes and sleeps until that lease
+                // could expire.
+                JobLog.PendingLeaseNotAcquired(_logger, pending.IdentityToken);
+                return;
             }
 
+            lease = new OccurrenceLease(pending.Id, token, pending.IdentityToken);
             JobLog.FollowUpStarting(_logger, pending.FollowUpOrdinal, pending.OriginScheduledExecutionId);
         }
 
         StartRun(occurrence, trigger, presetExecutionId: null, work.Pending?.FollowUpOrdinal ?? 0,
-            work.Pending?.OriginScheduledExecutionId, work.Pending, stoppingToken);
+            work.Pending?.OriginScheduledExecutionId, lease, stoppingToken);
+    }
+
+    /// <summary>
+    /// Removes a pending row whose occurrence already has a completed execution. Best effort:
+    /// on any failure the row stays leased or intact, and a later iteration retries.
+    /// </summary>
+    private async Task RemoveStalePendingRowAsync(PendingOccurrence? pending, CancellationToken stoppingToken)
+    {
+        if (pending is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var token = await _pendingStore.TryAcquireLeaseAsync(
+                pending.Id, _options.HostInstanceId, _options.PendingOccurrenceLeaseDuration,
+                _time.GetUtcNow(), stoppingToken).ConfigureAwait(false);
+            if (token is null)
+            {
+                return; // another owner has it; they will reach the same conclusion
+            }
+
+            if (await _pendingStore.CompleteAsync(pending.Id, token, stoppingToken).ConfigureAwait(false))
+            {
+                JobLog.StalePendingOccurrenceRemoved(_logger, pending.IdentityToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            JobLog.StoreOperationFailed(_logger, ex, "RemoveStalePendingOccurrence");
+        }
     }
 
     private void StartRun(
@@ -611,12 +824,12 @@ internal sealed class JobScheduleLoop
         string? presetExecutionId,
         int followUpOrdinal,
         string? originScheduledExecutionId,
-        PendingOccurrence? claimed,
+        OccurrenceLease? lease,
         CancellationToken stoppingToken)
     {
         var runTask = RunAndPlanFollowUpAsync(
             occurrence, trigger, presetExecutionId, followUpOrdinal, originScheduledExecutionId,
-            claimed, stoppingToken);
+            lease, stoppingToken);
         lock (_runs)
         {
             _runs.Add(runTask);
@@ -639,60 +852,149 @@ internal sealed class JobScheduleLoop
         string? presetExecutionId,
         int followUpOrdinal,
         string? originScheduledExecutionId,
-        PendingOccurrence? claimed,
+        OccurrenceLease? lease,
         CancellationToken stoppingToken)
     {
-        var result = await _runner
-            .RunAsync(_def, occurrence, trigger, presetExecutionId, _logger, stoppingToken)
-            .ConfigureAwait(false);
+        var runnerTask = _runner.RunAsync(_def, occurrence, trigger, presetExecutionId, _logger, stoppingToken);
+        if (lease is not null)
+        {
+            // Heartbeat: a live run's lease must never expire under it, or a second host would
+            // start the same occurrence mid-run. Renewal stops when the run completes.
+            await RenewLeaseWhileRunningAsync(runnerTask, lease).ConfigureAwait(false);
+        }
+
+        var result = await runnerTask.ConfigureAwait(false);
 
         if (result is null)
         {
-            // The runner declined — the job lock was unavailable. The row is already claimed, so
-            // put it back rather than losing a planned action to a lock we did not get.
-            await ReturnToQueueAsync(claimed).ConfigureAwait(false);
+            // The runner declined — the job lock was unavailable. Release the lease so the
+            // occurrence is immediately acquirable, and back off so acquire/decline/release
+            // cannot spin against a held lock.
+            ApplyDeclineCooldown();
+            await ReleaseLeaseAsync(lease, "job lock unavailable").ConfigureAwait(false);
             return null;
         }
 
-        await PlanFollowUpIfNeededAsync(result, occurrence, followUpOrdinal, originScheduledExecutionId)
-            .ConfigureAwait(false);
+        if (result.Status == JobExecutionStatus.Cancelled)
+        {
+            // Cancellation is non-terminal for a planned action: the work did not happen.
+            // Leave the row and release the lease, so the occurrence re-delivers here after
+            // the next start — or on another host.
+            await ReleaseLeaseAsync(lease, "execution cancelled").ConfigureAwait(false);
+            return result;
+        }
+
+        var planOutcome = await PlanFollowUpIfNeededAsync(
+            result, occurrence, followUpOrdinal, originScheduledExecutionId).ConfigureAwait(false);
+
+        if (lease is not null)
+        {
+            if (planOutcome == FollowUpPlanOutcome.WriteFailed)
+            {
+                // The chain's next link is not durable, so this row must survive: the lease
+                // lapses, the occurrence re-delivers at the same ordinal, and re-planning is
+                // idempotent through the unique (JobId, IdentityToken) index.
+                JobLog.FollowUpWriteFailedRowRetained(_logger, followUpOrdinal + 1);
+            }
+            else
+            {
+                await CompleteLeaseAsync(lease).ConfigureAwait(false);
+            }
+        }
 
         return result;
     }
 
-    private async Task ReturnToQueueAsync(PendingOccurrence? claimed)
+    /// <summary>Renews the lease at a third of its duration until the run completes.</summary>
+    private async Task RenewLeaseWhileRunningAsync(Task<JobRunResult?> runnerTask, OccurrenceLease lease)
     {
-        if (claimed is null)
+        var interval = TimeSpan.FromTicks(Math.Max(1, _options.PendingOccurrenceLeaseDuration.Ticks / 3));
+
+        while (!runnerTask.IsCompleted)
+        {
+            using var delayCts = new CancellationTokenSource();
+            var delay = Task.Delay(interval, _time, delayCts.Token);
+            var finished = await Task.WhenAny(runnerTask, delay).ConfigureAwait(false);
+            if (finished != delay)
+            {
+                await delayCts.CancelAsync().ConfigureAwait(false);
+                await ObserveAsync(delay).ConfigureAwait(false);
+                break;
+            }
+
+            try
+            {
+                var renewed = await _pendingStore.TryRenewLeaseAsync(
+                    lease.Id, lease.Token, _options.PendingOccurrenceLeaseDuration, _time.GetUtcNow(),
+                    CancellationToken.None).ConfigureAwait(false);
+                if (!renewed)
+                {
+                    // The lease is gone for good (taken over, or the row was removed). The run
+                    // is not killed: cancelling cannot undo side effects already performed, and
+                    // the duplicate-execution corner is the documented at-least-once trade.
+                    JobLog.PendingLeaseLost(_logger, lease.IdentityToken);
+                    break;
+                }
+            }
+            catch (Exception ex)
+            {
+                // Transient store trouble: keep the run going and try again next tick.
+                JobLog.StoreOperationFailed(_logger, ex, "RenewPendingLease");
+            }
+        }
+    }
+
+    private async Task ReleaseLeaseAsync(OccurrenceLease? lease, string reason)
+    {
+        if (lease is null)
         {
             return;
         }
 
         try
         {
-            await _pendingStore.AddAsync(
-                new PendingOccurrence
-                {
-                    Id = Guid.NewGuid().ToString("n"),
-                    JobId = claimed.JobId,
-                    DueAtUtc = claimed.DueAtUtc,
-                    IdentityToken = claimed.IdentityToken,
-                    Source = claimed.Source,
-                    OriginScheduledExecutionId = claimed.OriginScheduledExecutionId,
-                    FollowUpOrdinal = claimed.FollowUpOrdinal,
-                    PayloadJson = claimed.PayloadJson,
-                    CreatedAtUtc = claimed.CreatedAtUtc,
-                },
-                CancellationToken.None).ConfigureAwait(false);
-            JobLog.OutOfBandWorkReturnedToQueue(_logger, claimed.IdentityToken);
-            SignalWake();
+            if (await _pendingStore.ReleaseAsync(lease.Id, lease.Token, CancellationToken.None).ConfigureAwait(false))
+            {
+                JobLog.OutOfBandWorkReturnedToQueue(_logger, lease.IdentityToken, reason);
+                SignalWake();
+            }
         }
         catch (Exception ex)
         {
-            JobLog.StoreOperationFailed(_logger, ex, "ReturnPendingOccurrence");
+            // The lease simply lapses instead; recovery is slower but nothing is lost.
+            JobLog.StoreOperationFailed(_logger, ex, "ReleasePendingLease");
         }
     }
 
-    private async Task PlanFollowUpIfNeededAsync(
+    private async Task CompleteLeaseAsync(OccurrenceLease lease)
+    {
+        try
+        {
+            if (!await _pendingStore.CompleteAsync(lease.Id, lease.Token, CancellationToken.None).ConfigureAwait(false))
+            {
+                // We no longer held the lease. If the row still exists it belongs to another
+                // owner now and will re-deliver; the completed-identity check contains the blast
+                // radius to one duplicate run at most.
+                JobLog.PendingLeaseLost(_logger, lease.IdentityToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            // The row stays leased until expiry, then re-delivers; the stale-row cleanup in
+            // FireOccurrenceAsync removes it once the completed record is visible.
+            JobLog.StoreOperationFailed(_logger, ex, "CompletePendingOccurrence");
+        }
+    }
+
+    private void ApplyDeclineCooldown()
+    {
+        var cooldown = _options.LockAcquireTimeout >= TimeSpan.FromSeconds(1)
+            ? _options.LockAcquireTimeout
+            : TimeSpan.FromSeconds(1);
+        Volatile.Write(ref _declineCooldownUntilTicks, (_time.GetUtcNow() + cooldown).UtcTicks);
+    }
+
+    private async Task<FollowUpPlanOutcome> PlanFollowUpIfNeededAsync(
         JobRunResult result,
         JobScheduleOccurrence occurrence,
         int followUpOrdinal,
@@ -700,7 +1002,7 @@ internal sealed class JobScheduleLoop
     {
         if (_def.FollowUpRetry is not { } policy || result.Status != JobExecutionStatus.Failed)
         {
-            return;
+            return FollowUpPlanOutcome.NotNeeded;
         }
 
         // A deterministic failure normally repeats; retrying it just burns the window unless the
@@ -709,7 +1011,7 @@ internal sealed class JobScheduleLoop
             && result.FailureKind is JobFailureKind.Permanent or JobFailureKind.Misconfigured)
         {
             JobLog.FollowUpSkippedForPermanentFailure(_logger, result.FailureKind.Value);
-            return;
+            return FollowUpPlanOutcome.NotNeeded;
         }
 
         var nextOrdinal = followUpOrdinal + 1;
@@ -726,7 +1028,7 @@ internal sealed class JobScheduleLoop
         if (nextOrdinal > policy.MaxAttempts)
         {
             JobLog.FollowUpRetriesExhausted(_logger, policy.MaxAttempts, origin);
-            return;
+            return FollowUpPlanOutcome.NotNeeded;
         }
 
         var delay = policy.DelayFor(nextOrdinal);
@@ -746,16 +1048,26 @@ internal sealed class JobScheduleLoop
 
         try
         {
-            await _pendingStore.AddAsync(pending, CancellationToken.None).ConfigureAwait(false);
-            JobLog.FollowUpQueued(_logger, nextOrdinal, policy.MaxAttempts, delay, dueAt);
-            _metrics.FollowUpQueued(_def.JobId);
+            if (await _pendingStore.AddAsync(pending, CancellationToken.None).ConfigureAwait(false))
+            {
+                JobLog.FollowUpQueued(_logger, nextOrdinal, policy.MaxAttempts, delay, dueAt);
+                _metrics.FollowUpQueued(_def.JobId);
+            }
+            else
+            {
+                // A re-delivered occurrence re-ran and re-planned; the database's uniqueness
+                // guarantee turned the second write into a no-op — which is the design.
+                JobLog.PendingOccurrenceAlreadyQueued(_logger, pending.IdentityToken);
+            }
 
             // The loop decided what to wait for before this row existed, so it has to be told.
             SignalWake();
+            return FollowUpPlanOutcome.Planned;
         }
         catch (Exception ex)
         {
             JobLog.StoreOperationFailed(_logger, ex, "QueueFollowUpOccurrence");
+            return FollowUpPlanOutcome.WriteFailed;
         }
     }
 
@@ -814,7 +1126,7 @@ internal sealed class JobScheduleLoop
                 "manual:" + request.ExecutionId);
 
             StartRun(occurrence, TriggerManual, request.ExecutionId, followUpOrdinal: 0,
-                originScheduledExecutionId: null, claimed: null, stoppingToken);
+                originScheduledExecutionId: null, lease: null, stoppingToken);
             request.Accepted.TrySetResult(request.ExecutionId);
         }
     }

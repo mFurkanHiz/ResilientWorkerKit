@@ -437,7 +437,7 @@ public sealed class EfCorePendingOccurrenceStore : IPendingOccurrenceStore
     public EfCorePendingOccurrenceStore(IDbContextFactory<WorkerKitDbContext> factory) => _factory = factory;
 
     /// <inheritdoc />
-    public async Task AddAsync(PendingOccurrence occurrence, CancellationToken cancellationToken = default)
+    public async Task<bool> AddAsync(PendingOccurrence occurrence, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(occurrence);
         var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
@@ -455,19 +455,48 @@ public sealed class EfCorePendingOccurrenceStore : IPendingOccurrenceStore
                 PayloadJson = occurrence.PayloadJson,
                 CreatedAtUtc = occurrence.CreatedAtUtc.UtcDateTime,
             });
-            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                return true;
+            }
+            catch (DbUpdateException)
+            {
+                // Provider-portable duplicate detection: rather than decoding provider-specific
+                // error codes, ask the database whether the logical occurrence now exists. If it
+                // does, another writer won the unique (JobId, IdentityToken) index and this add
+                // is a duplicate by design; anything else is a real failure.
+                db.ChangeTracker.Clear();
+                var alreadyQueued = await db.PendingOccurrences.AsNoTracking()
+                    .AnyAsync(
+                        p => p.JobId == occurrence.JobId && p.IdentityToken == occurrence.IdentityToken,
+                        cancellationToken).ConfigureAwait(false);
+                if (alreadyQueued)
+                {
+                    return false;
+                }
+
+                throw;
+            }
         }
     }
 
     /// <inheritdoc />
-    public async Task<PendingOccurrence?> GetNextAsync(string jobId, CancellationToken cancellationToken = default)
+    public async Task<PendingOccurrence?> GetNextAsync(
+        string jobId, DateTimeOffset nowUtc, CancellationToken cancellationToken = default)
     {
+        var now = nowUtc.UtcDateTime;
         var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using (db.ConfigureAwait(false))
         {
+            // Effective time: an unexpired lease hides the row until the lease would expire, so
+            // a scheduler can sleep exactly until a dead owner's work becomes acquirable.
             var entity = await db.PendingOccurrences.AsNoTracking()
                 .Where(p => p.JobId == jobId)
-                .OrderBy(p => p.DueAtUtc)
+                .OrderBy(p => p.LeaseToken != null && p.LeaseExpiresAtUtc >= now && p.LeaseExpiresAtUtc > p.DueAtUtc
+                    ? p.LeaseExpiresAtUtc!.Value
+                    : p.DueAtUtc)
                 .ThenBy(p => p.Id)
                 .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
 
@@ -482,22 +511,86 @@ public sealed class EfCorePendingOccurrenceStore : IPendingOccurrenceStore
                 FollowUpOrdinal = entity.FollowUpOrdinal,
                 PayloadJson = entity.PayloadJson,
                 CreatedAtUtc = EfCoreJobExecutionStore.Utc(entity.CreatedAtUtc),
+                LeaseOwner = entity.LeaseOwner,
+                ClaimedAtUtc = entity.ClaimedAtUtc is { } claimed ? EfCoreJobExecutionStore.Utc(claimed) : null,
+                LeaseExpiresAtUtc = entity.LeaseExpiresAtUtc is { } expires ? EfCoreJobExecutionStore.Utc(expires) : null,
             };
         }
     }
 
     /// <inheritdoc />
-    public async Task<bool> TryClaimAsync(string id, CancellationToken cancellationToken = default)
+    public async Task<string?> TryAcquireLeaseAsync(
+        string id, string owner, TimeSpan duration, DateTimeOffset nowUtc,
+        CancellationToken cancellationToken = default)
+    {
+        var now = nowUtc.UtcDateTime;
+        var expiresAt = now + duration;
+        var token = Guid.NewGuid().ToString("n");
+
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            // The conditional update IS the race arbiter: of any number of concurrent callers,
+            // the database lets exactly one match the unleased-or-expired predicate.
+            var won = await db.PendingOccurrences
+                .Where(p => p.Id == id && (p.LeaseToken == null || p.LeaseExpiresAtUtc < now))
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(p => p.LeaseOwner, owner)
+                    .SetProperty(p => p.LeaseToken, token)
+                    .SetProperty(p => p.ClaimedAtUtc, now)
+                    .SetProperty(p => p.LeaseExpiresAtUtc, expiresAt),
+                    cancellationToken).ConfigureAwait(false);
+
+            return won > 0 ? token : null;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> TryRenewLeaseAsync(
+        string id, string leaseToken, TimeSpan duration, DateTimeOffset nowUtc,
+        CancellationToken cancellationToken = default)
+    {
+        var expiresAt = nowUtc.UtcDateTime + duration;
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            var renewed = await db.PendingOccurrences
+                .Where(p => p.Id == id && p.LeaseToken == leaseToken)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(p => p.LeaseExpiresAtUtc, expiresAt),
+                    cancellationToken).ConfigureAwait(false);
+            return renewed > 0;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> CompleteAsync(string id, string leaseToken, CancellationToken cancellationToken = default)
     {
         var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using (db.ConfigureAwait(false))
         {
-            // The delete is the claim: the database decides the single winner, so this stays
-            // correct if a second host instance is ever added.
             var deleted = await db.PendingOccurrences
-                .Where(p => p.Id == id)
+                .Where(p => p.Id == id && p.LeaseToken == leaseToken)
                 .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
             return deleted > 0;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> ReleaseAsync(string id, string leaseToken, CancellationToken cancellationToken = default)
+    {
+        var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (db.ConfigureAwait(false))
+        {
+            var released = await db.PendingOccurrences
+                .Where(p => p.Id == id && p.LeaseToken == leaseToken)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(p => p.LeaseOwner, (string?)null)
+                    .SetProperty(p => p.LeaseToken, (string?)null)
+                    .SetProperty(p => p.ClaimedAtUtc, (DateTime?)null)
+                    .SetProperty(p => p.LeaseExpiresAtUtc, (DateTime?)null),
+                    cancellationToken).ConfigureAwait(false);
+            return released > 0;
         }
     }
 

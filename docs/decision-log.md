@@ -115,14 +115,25 @@ validations can then be reconsidered together with a documented migration.
 
 Pending rows previously used random GUID ids, so nothing prevented the same logical follow-up
 being queued twice (for example by crash-recovery re-planning after a re-run, or by two hosts
-planning the same follow-up). **Decision:** the row id *is* the logical identity:
-`{jobId}:{originIdentity}+followup-{ordinal}` for follow-ups. `AddAsync` treats a primary-key
-conflict as "already queued" and reports it as such rather than throwing — the database
-becomes the cross-process arbiter of "this follow-up exists", with no extra query and no
-separate uniqueness machinery.
+planning the same follow-up). **Decision:** uniqueness of the logical occurrence is enforced
+by the database with a **unique index on (`JobId`, `IdentityToken`)**; the row id stays an
+opaque GUID. `AddAsync` treats a uniqueness violation as "already queued" and reports it as
+`false` rather than throwing — the database is the cross-process arbiter of "this follow-up
+exists".
 
-**Rejected alternative:** an `ExistsForOriginAsync` store query before every add — racy
-(check-then-act across processes), one extra round trip, and more contract surface.
+**Rejected alternatives.** *An `ExistsForOriginAsync` store query before every add* — racy
+(check-then-act across processes), one extra round trip, more contract surface. *Making the
+row id itself the logical identity* (the first draft of this entry) — rejected by the
+pre-implementation review: `{jobId}:{identity}` can reach 500 characters, past SQL Server's
+900-byte clustered-key limit, whereas the same pair as a *nonclustered* unique index fits the
+1700-byte limit at the declared column sizes; and an opaque id keeps its meaning when future
+sources define identities of their own.
+
+**Migration note (binding for the persistence docs):** 1.1.x could legitimately produce
+duplicate (`JobId`, `IdentityToken`) pairs — its `ReturnToQueueAsync` re-added a claimed row
+under a fresh GUID. Creating the unique index on an existing table must therefore be preceded
+by a documented deduplication step (keep the earliest `CreatedAtUtc` row per pair, delete the
+rest).
 
 **Revisit if:** a source other than follow-up retries needs multiple rows for the same logical
 occurrence; that source would then define its own id scheme, which the contract permits.
@@ -166,6 +177,43 @@ the existing checkpoint/idempotency primitives as the mechanism.
 (duplicate side effects for non-opted-in jobs). *Persist "chain intent" in a separate table* —
 more schema for what the execution record already encodes in its identity. *Do nothing but
 document* — leaves blocking problem B open.
+
+**Amendments from the pre-implementation adversarial review:**
+
+- **Completion is gated on the follow-up-planning outcome.** The review's one blocking
+  finding: planning a follow-up can fail to write durably (a transient store outage, logged
+  and swallowed), after which an unconditional `CompleteAsync` deletes the ordinal-N row and
+  the chain is lost with no recovery path. Planning therefore reports
+  `Planned / NotNeeded / WriteFailed`, and the engine completes the row only for the first
+  two. On `WriteFailed` the lease is left to lapse (or released), so the occurrence
+  re-delivers, re-runs at the same ordinal, and re-plans — the unique index (D-003) makes the
+  re-plan idempotent. A duplicate run of ordinal N is the accepted at-least-once corner; a
+  lost chain is not.
+- **A `Cancelled` outcome never completes the row.** Cancellation (graceful shutdown, and
+  cancellation generally) is a non-terminal outcome *for a planned action*: the work did not
+  happen. The lease is released so the occurrence re-delivers — on the next start, or on
+  another host. Deleting the row on shutdown would turn every redeploy into a lost planned
+  action, which is the exact defect class this stage exists to remove.
+- **The recovery scan classifies records by `TriggerType`, not by parsing identity tokens.**
+  A custom `IJobSchedule` may legitimately emit identity tokens containing `+followup-`;
+  trigger type is engine-assigned and unforgeable. Ordinal-0 candidates are records whose
+  trigger is anything but `follow-up`, with status `Abandoned` or `Failed` (`Failed` covers
+  the narrow crash window between the terminal record and the follow-up's durable write).
+  `Cancelled` ordinal-0 records are deliberately *not* candidates: cancellation is an
+  explicit, recorded decision in this library's semantics, and the schedule-occurrence path
+  applies any-record misfire suppression to it; changing that is out of scope here and would
+  need its own decision.
+- **No staleness cutoff on chain continuation, deliberately.** A planned action's contract is
+  "late is better than never" — the same reasoning as `RunImmediatelyOnce` being the default
+  misfire policy for planned schedules. The scan is bounded by the same recent-200 window the
+  anchor recovery uses; both boundaries are documented rather than silent.
+- **Clock discipline is documented, not hand-waved:** stores never read their own clock
+  (`nowUtc` is a parameter); heartbeat renewal runs at lease-duration ∕ 3 from inside the
+  loop that owns the run; cross-host clock skew must stay under that same third for the
+  renewal guarantee to hold, which is stated in the persistence documentation. A renewal
+  failure (lease lost to another owner) is logged and the run is *not* killed — killing it
+  cannot undo side effects already performed, and the duplicate-execution corner is the
+  documented at-least-once trade.
 
 **Revisit if:** execution records ever stop encoding the ordinal in `ScheduledExecutionId`;
 the ordinal would then need its own column (additive schema change).
@@ -222,9 +270,18 @@ break is as low as it will ever be, and every alternative preserves an unsafe pa
 
 ### Contract shape (implemented in stage 1)
 
-- `AddAsync` — unchanged semantics, plus: a primary-key conflict means "already queued"
-  (D-003) and is reported, not thrown.
-- `GetNextAsync` — earliest occurrence that is *acquirable*: unleased, or lease expired.
+- `AddAsync` — unchanged semantics, plus: a unique-index conflict on
+  (`JobId`, `IdentityToken`) means "already queued" (D-003) and is reported as
+  <code>false</code>, not thrown.
+- `GetNextAsync` — the occurrence with the earliest *effective* time: an unleased or
+  expired-lease occurrence is effective at its due time; an occurrence under an unexpired
+  lease is surfaced no earlier than its lease expiry, with its lease fields populated.
+  Returning leased rows is load-bearing — it is what lets a scheduler sleep *until* another
+  owner's lease expires instead of polling, and what makes expired-lease recovery
+  visibility-based instead of a background sweeper. (The original text of this entry said
+  "acquirable only"; that wording was found self-contradictory by the pre-implementation
+  adversarial review — a schedule-less job would sleep forever with no wake at expiry — and
+  was corrected before any code was written.)
 - `TryAcquireLeaseAsync(id, owner, duration)` → lease token or null; atomic single-winner via
   conditional update (`WHERE` unleased-or-expired), the database picks the winner.
 - `TryRenewLeaseAsync(id, token, duration)` — heartbeat; the engine renews while the execution

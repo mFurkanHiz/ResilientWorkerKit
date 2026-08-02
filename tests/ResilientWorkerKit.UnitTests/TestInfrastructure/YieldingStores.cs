@@ -17,22 +17,42 @@ internal sealed class YieldingPendingOccurrenceStore : IPendingOccurrenceStore
 
     public YieldingPendingOccurrenceStore(IPendingOccurrenceStore inner) => _inner = inner;
 
-    public async Task AddAsync(PendingOccurrence occurrence, CancellationToken cancellationToken = default)
+    public async Task<bool> AddAsync(PendingOccurrence occurrence, CancellationToken cancellationToken = default)
     {
         await Task.Yield();
-        await _inner.AddAsync(occurrence, cancellationToken);
+        return await _inner.AddAsync(occurrence, cancellationToken);
     }
 
-    public async Task<PendingOccurrence?> GetNextAsync(string jobId, CancellationToken cancellationToken = default)
+    public async Task<PendingOccurrence?> GetNextAsync(string jobId, DateTimeOffset nowUtc, CancellationToken cancellationToken = default)
     {
         await Task.Yield();
-        return await _inner.GetNextAsync(jobId, cancellationToken);
+        return await _inner.GetNextAsync(jobId, nowUtc, cancellationToken);
     }
 
-    public async Task<bool> TryClaimAsync(string id, CancellationToken cancellationToken = default)
+    public async Task<string?> TryAcquireLeaseAsync(
+        string id, string owner, TimeSpan duration, DateTimeOffset nowUtc, CancellationToken cancellationToken = default)
     {
         await Task.Yield();
-        return await _inner.TryClaimAsync(id, cancellationToken);
+        return await _inner.TryAcquireLeaseAsync(id, owner, duration, nowUtc, cancellationToken);
+    }
+
+    public async Task<bool> TryRenewLeaseAsync(
+        string id, string leaseToken, TimeSpan duration, DateTimeOffset nowUtc, CancellationToken cancellationToken = default)
+    {
+        await Task.Yield();
+        return await _inner.TryRenewLeaseAsync(id, leaseToken, duration, nowUtc, cancellationToken);
+    }
+
+    public async Task<bool> CompleteAsync(string id, string leaseToken, CancellationToken cancellationToken = default)
+    {
+        await Task.Yield();
+        return await _inner.CompleteAsync(id, leaseToken, cancellationToken);
+    }
+
+    public async Task<bool> ReleaseAsync(string id, string leaseToken, CancellationToken cancellationToken = default)
+    {
+        await Task.Yield();
+        return await _inner.ReleaseAsync(id, leaseToken, cancellationToken);
     }
 
     public async Task<int> CountAsync(string jobId, CancellationToken cancellationToken = default)

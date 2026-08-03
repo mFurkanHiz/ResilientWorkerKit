@@ -16,11 +16,21 @@ suite (SQL Server included) against the exact tag before packing what it pushes.
 
 ### Credentials — Trusted Publishing first
 
-1. **Trusted Publishing (preferred, no long-lived secret):** on nuget.org →
-   *Trusted Publishing* → add a policy for `mFurkanHiz/ResilientWorkerKit`, workflow file
-   `release.yml`. Then set the repository **variable** `NUGET_TRUSTED_PUBLISHING=true` and the
-   **secret** `NUGET_USER` (the nuget.org username). The workflow exchanges a GitHub OIDC
-   token for a short-lived push key at run time.
+1. **Trusted Publishing (preferred, no long-lived secret).** On nuget.org, signed in as the
+   package-owner **user account**, create the policy with exactly these values:
+
+   | Field | Value |
+   |---|---|
+   | Repository owner | `mFurkanHiz` |
+   | Repository | `ResilientWorkerKit` |
+   | Workflow file | `release.yml` |
+   | Environment | `nuget-release` |
+
+   Then on GitHub (repository settings): **variable** `NUGET_TRUSTED_PUBLISHING` = `true`,
+   and **secret** `NUGET_USER` = the nuget.org **profile username** (the display name on
+   your nuget.org profile — **not** an e-mail address). The workflow exchanges a GitHub OIDC
+   token for a short-lived push key at run time. Never write a token value anywhere in the
+   repository, and never share one in a conversation.
 2. **Scoped API key (fallback):** nuget.org → *API keys* → create a key scoped to **Push
    only**, glob `ResilientWorkerKit*`, shortest practical expiry (90 days or less). Store it
    as the `NUGET_API_KEY` secret. Rotate on every expiry; delete it once Trusted Publishing
@@ -28,11 +38,28 @@ suite (SQL Server included) against the exact tag before packing what it pushes.
 
 With neither configured, the workflow stops before pushing anything.
 
-**Environment hardening (do this when creating `nuget-release`):** besides required
-reviewers, restrict the environment's *deployment branches and tags* to `v*` tags (or at
-minimum protected refs). `workflow_dispatch` runs the workflow file from whichever ref the
-dispatcher selects, so without this restriction a modified copy of `release.yml` on a side
-branch could reach the environment's approval gate; with it, only the protected refs can.
+### The ref model — how the environment gate and the tag interact
+
+GitHub applies an environment's *deployment branches* rule to the **run's own ref**
+(`GITHUB_REF` — the "Use workflow from" selection in the Actions UI), not to what the job
+checks out. The model is therefore:
+
+- The release is always dispatched **from `main`** — the workflow's first step fails on any
+  other ref, so a modified copy of `release.yml` on a side branch can never reach the
+  credential.
+- The `nuget-release` environment's deployment rule allows **only the `main` branch**.
+- **What gets published** is selected by the `tag` input: the workflow checks out exactly
+  that tag, verifies it matches `VersionPrefix`, and verifies the tag points at a commit in
+  main's history.
+
+**Environment setup (repository settings → Environments):**
+
+| Setting | Value |
+|---|---|
+| Name | `nuget-release` |
+| Deployment branches | Selected branches → `main` only |
+| Required reviewers | add yourself (or a second maintainer) |
+| Prevent self-review | **off** while there is a sole maintainer — otherwise nobody can approve |
 
 ## Package ownership
 
@@ -61,9 +88,11 @@ than one.
 
 ## Publish (stage 2B, only after the owner's explicit approval)
 
-1. Tag the approved commit: `git tag v2.0.0 <sha> && git push origin v2.0.0`.
-2. GitHub → Actions → **Release** → *Run workflow* → tag `v2.0.0`. Approve the
-   `nuget-release` environment gate if configured.
+1. Tag the approved release commit **on main**: `git tag v2.0.0 <sha> && git push origin v2.0.0`.
+2. GitHub → Actions → **Release** → *Run workflow* → **Use workflow from: `main`** → input
+   tag `v2.0.0`. The workflow then checks out that exact tag, verifies it against
+   `VersionPrefix` and verifies the tag lies on main. Approve the `nuget-release`
+   environment gate when prompted.
 3. Watch the run: tests → pack → push (with `--skip-duplicate`; symbol packages are pushed
    automatically alongside).
 4. Verify on nuget.org, per package: version listed, README rendered, icon shown, the

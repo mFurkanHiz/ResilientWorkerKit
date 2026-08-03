@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html): from 1.0 onwards, breaking changes
 require a major version and additive capabilities a minor one.
 
-## [2.0.0] — Unreleased
+## [2.0.0] — 2026-08-03
 
 Core hardening ahead of the first NuGet publication. The headline: **executing a durably
 planned occurrence can no longer lose it**, whatever the crash timing. The version is major
@@ -265,7 +265,7 @@ additive (`IJobLockProvider` is already the seam) and is planned for a 1.x relea
 
 See [docs/limitations.md](docs/limitations.md) for the full list.
 
-[2.0.0]: https://github.com/mFurkanHiz/ResilientWorkerKit/compare/v1.1.1...core-hardening-2.x
+[2.0.0]: https://github.com/mFurkanHiz/ResilientWorkerKit/compare/v1.1.1...v2.0.0
 [1.1.1]: https://github.com/mFurkanHiz/ResilientWorkerKit/releases/tag/v1.1.1
 [1.1.0]: https://github.com/mFurkanHiz/ResilientWorkerKit/releases/tag/v1.1.0
 [1.0.0]: https://github.com/mFurkanHiz/ResilientWorkerKit/releases/tag/v1.0.0

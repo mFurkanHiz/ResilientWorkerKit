@@ -129,6 +129,26 @@ public abstract class PendingOccurrenceLeaseContract
     }
 
     [SkippableFact]
+    public async Task AZeroDurationLease_IsExpiredTheInstantItIsAcquired()
+    {
+        // Documents the hazard WorkerKitOptionsValidator exists to prevent: with a zero
+        // duration, a second owner can take the occurrence over immediately — duplicate
+        // acquisition by configuration. The engine refuses to start with such a value; this
+        // pins the store-level behaviour that makes that refusal necessary.
+        var store = await CreateStoreAsync();
+        await store.AddAsync(Row());
+
+        var first = await store.TryAcquireLeaseAsync("row-1", "host-a", TimeSpan.Zero, T0);
+        Assert.NotNull(first);
+
+        var second = await store.TryAcquireLeaseAsync("row-1", "host-b", Lease, T0);
+        Assert.NotNull(second);
+
+        // And the first owner's token is already dead.
+        Assert.False(await store.CompleteAsync("row-1", first));
+    }
+
+    [SkippableFact]
     public async Task ALease_IsAcquirable_AtExactlyItsExpiryInstant()
     {
         // GetNextAsync surfaces a leased row AT its expiry, so a scheduler woken exactly then

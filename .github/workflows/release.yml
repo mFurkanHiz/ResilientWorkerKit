@@ -2,11 +2,18 @@
 #
 #   - MANUAL ONLY. The single trigger is workflow_dispatch; no push, tag-push or release
 #     event can start it, so no git operation can ever publish by accident.
+#   - MAIN-REF ONLY. GitHub's environment deployment rules apply to the run's own ref
+#     (GITHUB_REF — the "Use workflow from" selection), not to what the job checks out. The
+#     model is therefore: dispatch from `main` only (the first step fails fast on any other
+#     ref, so a modified copy of this file on a side branch never reaches the credential),
+#     and the "nuget-release" environment's deployment rule allows only the `main` branch.
+#     What gets PUBLISHED is still selected by the tag input below.
 #   - TAG-GATED. The workflow checks out exactly the tag given as input (missing tag = the
-#     checkout fails = nothing happens) and refuses to continue unless the tag matches the
-#     VersionPrefix in Directory.Build.props at that tag.
-#   - ENVIRONMENT-GATED. The job runs in the "nuget-release" environment; add required
-#     reviewers to that environment in the repository settings to force a manual approval
+#     checkout fails = nothing happens), refuses to continue unless the tag matches the
+#     VersionPrefix in Directory.Build.props at that tag, and requires the tag to point at a
+#     commit in main's history.
+#   - ENVIRONMENT-GATED. The job runs in the "nuget-release" environment; add a required
+#     reviewer to that environment in the repository settings to force a manual approval
 #     click before any step executes.
 #   - CREDENTIALS. Preferred: NuGet Trusted Publishing (OIDC — no long-lived secret): create
 #     a trusted publishing policy on nuget.org for this repository and this workflow file,
@@ -63,14 +70,27 @@ jobs:
           --health-start-period 20s
 
     steps:
+      # Fail fast before anything else: the run itself must come from main. This is what the
+      # environment's deployment rule keys on, and it guarantees the release.yml that executes
+      # is the reviewed one on main — not a modified copy on a side branch.
+      - name: Enforce dispatch from main
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          if [ "$DISPATCH_REF" != "refs/heads/main" ]; then
+            echo "::error::Release must be dispatched with 'Use workflow from: main'; got '$DISPATCH_REF'. The tag input selects what is published — the run's ref selects which workflow definition executes, and only main's is trusted."
+            exit 1
+          fi
+
       # The tag gate: a missing tag fails the checkout, and a tag that does not match the
-      # version baked into the build at that tag fails the next step.
+      # version baked into the build at that tag — or does not point into main's history —
+      # fails the next step.
       - uses: actions/checkout@v5
         with:
           ref: refs/tags/${{ inputs.tag }}
-          fetch-depth: 0 # SourceLink needs full history
+          fetch-depth: 0 # SourceLink needs full history; the ancestry check needs main
 
-      - name: Verify the tag matches the package version
+      - name: Verify the tag matches the package version and lies on main
         env:
           # Passed through the environment, never interpolated into script text: a ref name
           # can contain shell metacharacters, and this job later holds the push credential.
@@ -79,6 +99,11 @@ jobs:
           VERSION=$(sed -n 's/.*<VersionPrefix>\(.*\)<\/VersionPrefix>.*/\1/p' Directory.Build.props)
           if [ "v$VERSION" != "$RELEASE_TAG" ]; then
             echo "::error::Tag '$RELEASE_TAG' does not match VersionPrefix '$VERSION' at that tag."
+            exit 1
+          fi
+          git fetch origin main --quiet
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::Tag '$RELEASE_TAG' does not point at a commit in main's history; only approved release commits on main are publishable."
             exit 1
           fi
           echo "Publishing version $VERSION"

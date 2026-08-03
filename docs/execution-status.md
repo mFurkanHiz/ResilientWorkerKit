@@ -31,21 +31,28 @@ verification. The stage gate report goes to the owner next; stage 2 starts only 
   multi-instance boundary, migration SQL with dedup step, PayloadJson write-only note);
   CHANGELOG 2.0.0 entry.
 
+- Post-implementation adversarial review (4 lenses + refutation): five confirmed findings —
+  acquire-throw hot spin (blocking), queue-read failure stranding durable work, origin
+  plan-write chain loss in-process, queued-overlap anchor regression (a pre-existing 1.x
+  defect), inclusive-expiry off-by-one, stale observability catalogue — all fixed test-first
+  and recorded as D-001/D-002 amendments in the decision log.
+
 ## In progress
 
-- Final full verification (build, format, both TFMs, pack) and the stage 1 exit report.
+- Awaiting the CI run for the review-fix commit; then the stage 1 exit report.
 
 ## Blockers
 
 - None. SQL Server tests skip locally (no Docker on this machine) by design; the CI Linux leg
-  executes them.
+  executes them — verified: ubuntu ran 55/55 integration tests with zero skips.
 
 ## Last verified state
 
-- Local: unit 235 × 2 TFMs green; integration 43 green + 12 SQL-Server-skipped × 2 TFMs;
-  `dotnet format` clean. CI run on this branch: pending push.
+- Local (Release): unit 239 × 2 TFMs green; integration 45 green + 13 SQL-Server-skipped ×
+  2 TFMs; `dotnet format` clean; 5 packages pack with package validation on.
+- CI: first branch run fully green on both OSes, SQL Server leg included.
 
 ## Next step
 
-Push the branch, run CI (workflow_dispatch), adversarial code review of the full diff, then
-the stage 1 exit report — and **stop at the stage gate**.
+Stage 1 exit report to the owner — then **stop at the stage gate**. Stage 2 (release
+readiness) starts only on `DEVAM: SONRAKİ AŞAMAYA GEÇ`.

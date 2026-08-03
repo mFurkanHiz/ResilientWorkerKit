@@ -1,7 +1,7 @@
 # Limitations
 
-Read this before adopting the library. Every item is a deliberate boundary of the v0.1 scope, not
-an oversight, and each one is stated here rather than discovered in production.
+Read this before adopting the library. Every item is a deliberate boundary of the current
+scope, not an oversight, and each one is stated here rather than discovered in production.
 
 ## No exactly-once execution
 
@@ -26,6 +26,18 @@ attributed to a dead process and marked `Abandoned`. With two live instances thi
 the other instance's healthy execution. If you must run multiple instances today, set
 `WorkerKitOptions.RunStartupRecovery = false` and understand that you have no overlap protection
 between them.
+
+**One capability is an exception, and only one.** The pending-occurrence queue (follow-up
+retries) uses database-arbitrated leases: a single lease winner per occurrence, expiry-based
+takeover from dead hosts, and owner-token-checked completion, proven by a store contract suite
+that runs against SQLite and SQL Server. That makes *that queue* correct under multiple hosts —
+it does **not** make the library multi-instance safe. Scheduled occurrences can still
+double-run (the completed-identity check is check-then-act across processes), job locks are
+still per-process, startup recovery still abandons other hosts' live executions, and a host
+never wakes another host's scheduler. Full multi-instance support requires all of: a
+distributed `IJobLockProvider`, lease-aware startup recovery, atomic scheduled-occurrence
+dedup, and cross-process wake or polling — until every one of those exists, run one active
+instance.
 
 `IJobLockProvider` exists precisely so a distributed implementation can be dropped in; it is the
 top item in [roadmap.md](roadmap.md).

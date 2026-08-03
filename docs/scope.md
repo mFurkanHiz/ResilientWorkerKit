@@ -19,7 +19,7 @@ The unit of work is a **job class you write** (`IWorkerJob`), executed **in-proc
 single .NET Generic Host, with durable state (checkpoints, execution history, idempotency
 records) stored through pluggable providers.
 
-## MVP (v0.1)
+## Core scope (shipped since 1.0)
 
 ### Execution engine
 - `IWorkerJob` job contract with `JobExecutionContext`
@@ -60,13 +60,14 @@ records) stored through pluggable providers.
   — consumable by OpenTelemetry without a dedicated adapter package
 - Health check package: per-job Healthy/Degraded/Unhealthy with configurable thresholds and stuck detection
 
-## Non-goals (v0.1)
+## Non-goals (Core)
 
 - Exactly-once execution guarantees
 - Distributed locking / multi-instance coordination (single active host instance is assumed; documented)
 - Web dashboard or admin UI
 - Job persistence of *job definitions* (definitions live in code; only runtime state is persisted)
-- Dynamic job registration at runtime
+- Dynamic job registration at runtime — intentionally outside the Core package; runtime-defined
+  schedules are developed through optional Dynamic Scheduling packages in the same repository
 - Message-queue-driven job triggering
 - PostgreSQL/MySQL-specific store packages (the EF Core model is provider-agnostic; only SQLite is shipped as a sample provider)
 

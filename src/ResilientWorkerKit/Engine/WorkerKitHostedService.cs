@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using ResilientWorkerKit.Registration;
 
 namespace ResilientWorkerKit.Engine;
 
@@ -32,6 +33,10 @@ internal sealed class WorkerKitHostedService : BackgroundService
         TimeProvider time,
         ILoggerFactory loggerFactory)
     {
+        // Fail fast, before any loop exists: the lease guarantees depend on these values, and
+        // a bad one must stop the host here rather than surface as duplicate executions later.
+        WorkerKitOptionsValidator.Validate(options);
+
         _registry = registry;
         _runner = runner;
         _executionStore = executionStore;
@@ -50,7 +55,7 @@ internal sealed class WorkerKitHostedService : BackgroundService
             {
                 var jobLogger = _loggerFactory.CreateLogger($"ResilientWorkerKit.Jobs.{definition.JobId}");
                 _loops[definition.JobId] = new JobScheduleLoop(
-                    definition, _runner, _executionStore, _pendingStore, _health, _metrics, _time, jobLogger);
+                    definition, _runner, _executionStore, _pendingStore, _health, _metrics, _options, _time, jobLogger);
             }
         }
     }

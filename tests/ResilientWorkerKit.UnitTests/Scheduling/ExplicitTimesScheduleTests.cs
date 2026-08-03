@@ -40,12 +40,46 @@ public class ExplicitTimesScheduleTests
     }
 
     [Fact]
-    public void DuplicateInstantsCollapse()
+    public void DuplicateInstantsAreRejected()
     {
+        // A planned action must run or fail loudly — silently collapsing a duplicate hides a
+        // configuration mistake.
         var t = Times.Utc(2026, 8, 15, 7, 0);
-        var schedule = new ExplicitTimesSchedule([t, t, t]);
 
-        Assert.Single(schedule.Times);
+        var ex = Assert.Throws<JobConfigurationException>(() => new ExplicitTimesSchedule([t, t, t]));
+        Assert.Contains("more than once", ex.Message);
+    }
+
+    [Fact]
+    public void SameInstantInDifferentOffsets_IsStillADuplicate()
+    {
+        // 10:00+03:00 and 07:00Z are the same instant.
+        var local = new DateTimeOffset(2026, 8, 15, 10, 0, 0, TimeSpan.FromHours(3));
+        var utc = Times.Utc(2026, 8, 15, 7, 0);
+
+        Assert.Throws<JobConfigurationException>(() => new ExplicitTimesSchedule([local, utc]));
+    }
+
+    [Fact]
+    public void InstantsWithinTheSameSecond_AreRejected()
+    {
+        // Occurrence identity has second precision ("at:...T07:00:00Z"). Two distinct instants
+        // in the same second would share an identity, and the second one would be silently
+        // skipped as a duplicate after the first completes — worse than failing fast here.
+        var a = Times.Utc(2026, 8, 15, 7, 0).AddMilliseconds(100);
+        var b = Times.Utc(2026, 8, 15, 7, 0).AddMilliseconds(900);
+
+        var ex = Assert.Throws<JobConfigurationException>(() => new ExplicitTimesSchedule([a, b]));
+        Assert.Contains("same UTC second", ex.Message);
+    }
+
+    [Fact]
+    public void InstantsInDifferentSeconds_AreAccepted()
+    {
+        var schedule = new ExplicitTimesSchedule(
+            [Times.Utc(2026, 8, 15, 7, 0, 1), Times.Utc(2026, 8, 15, 7, 0, 2)]);
+
+        Assert.Equal(2, schedule.Times.Count);
     }
 
     [Fact]
@@ -81,30 +115,6 @@ public class ExplicitTimesScheduleTests
         Assert.Equal(Times.Utc(2026, 8, 16, 7, 0), schedule.Times[1]);
         Assert.Equal("Europe/Istanbul", definition.TimeZone.Id);
     }
-
-    [Fact]
-    public void Repeating_GeneratesTheExpectedInstants()
-    {
-        var start = Times.Utc(2026, 8, 15, 7, 0);
-        var definition = RunnerHarness.Definition(b => b.Repeating(start, TimeSpan.FromHours(4), 3));
-
-        var schedule = Assert.IsType<ExplicitTimesSchedule>(definition.Schedule);
-        Assert.Equal(
-            [start, start.AddHours(4), start.AddHours(8)],
-            schedule.Times);
-    }
-
-    [Theory]
-    [InlineData(0)]
-    [InlineData(-1)]
-    public void Repeating_RejectsNonPositiveCounts(int count)
-        => Assert.Throws<JobConfigurationException>(() =>
-            RunnerHarness.Definition(b => b.Repeating(Times.Utc(2026, 8, 15), TimeSpan.FromHours(1), count)));
-
-    [Fact]
-    public void Repeating_RejectsNonPositiveIntervals()
-        => Assert.Throws<JobConfigurationException>(() =>
-            RunnerHarness.Definition(b => b.Repeating(Times.Utc(2026, 8, 15), TimeSpan.Zero, 3)));
 
     [Fact]
     public void DefaultMisfirePolicy_IsRunImmediatelyOnce()

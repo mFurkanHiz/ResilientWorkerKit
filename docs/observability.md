@@ -53,7 +53,8 @@ scheduler decision, every attempt, every HTTP call the job made and the final ou
 ### Log events
 
 All engine messages are source-generated (`JobLog`) with constant templates and stable event ids.
-Ids 1000–1029 are engine-owned; job code should use its own range.
+Ids **1000–1099 are reserved for the engine** (1000–1042 in use today); job code should use its
+own range.
 
 | Id | Name | Level | Meaning |
 |---|---|---|---|
@@ -87,10 +88,32 @@ Ids 1000–1029 are engine-owned; job code should use its own range.
 | 1027 | `ManualTriggerRequested` | Information | `IManualJobTrigger` requested a run |
 | 1028 | `StoreOperationFailed` | Error | A durable-store call threw; the engine continues but persisted state may be incomplete — carries the exception |
 | 1029 | `SchedulerLoopCrashed` | Error | Last-resort catch: a loop bug stopped scheduling this job until restart. This is a bug in ResilientWorkerKit — carries the exception |
+| 1030 | `RunnerFaulted` | Error | The execution pipeline faulted instead of recording a result. This is a bug in ResilientWorkerKit — carries the exception |
+| 1031 | `FollowUpQueued` | Warning | A durable follow-up retry was queued; ordinal, max attempts and due time |
+| 1032 | `FollowUpStarting` | Information | A follow-up execution is starting; carries the origin occurrence |
+| 1033 | `FollowUpRetriesExhausted` | Error | The follow-up chain used all attempts; the occurrence will not be retried again |
+| 1034 | `FollowUpSkippedForPermanentFailure` | Information | No follow-up queued: the failure was deterministic and `RetryPermanentFailures` is off |
+| 1035 | `OutOfBandWorkDeferred` | Debug | Durable work is due but the job is busy; it stays queued and is not dropped |
+| 1036 | `OutOfBandWorkReturnedToQueue` | Warning | The lease was released without executing (job lock unavailable, or the run was cancelled); the occurrence is immediately acquirable again |
+| 1037 | `PendingLeaseLost` | Warning | The lease could not be renewed or completed — another host may take the occurrence over; the run continues and a duplicate execution is the documented at-least-once corner |
+| 1038 | `FollowUpChainResumed` | Warning | `ContinueAfterAbandoned` queued follow-up 1 for an origin execution that ended without a durable follow-up |
+| 1039 | `PendingOccurrenceAlreadyQueued` | Debug | The logical occurrence is already queued; the unique index made the write a no-op |
+| 1040 | `PendingLeaseNotAcquired` | Debug | Another owner holds the lease; the loop waits for its expiry |
+| 1041 | `FollowUpWriteFailedRowRetained` | Warning | The next follow-up could not be written durably; the current row is kept so the occurrence re-delivers instead of the chain being lost |
+| 1042 | `StalePendingOccurrenceRemoved` | Information | A pending row whose occurrence had already completed was cleaned up |
+
+Alerting note: **1037 and 1041 are the durability warnings** — they mean the store misbehaved
+at a moment the engine specifically defends, and while the engine recovers on its own, repeated
+occurrences point at the database. 1038 fires at most once per resumed chain and is the audit
+trail for `ContinueAfterAbandoned`.
 
 `StoreOperationFailed` (1028) carries an `Operation` field naming the failed call:
 `CreateExecution`, `UpdateExecution`, `AddDeadLetter`, `StartupRecovery`, `RecoverScheduleState`,
-`CheckMissedOccurrence`, `CheckDuplicateOccurrence` or `ClassifyFailure`.
+`CheckMissedOccurrence`, `CheckDuplicateOccurrence`, `ClassifyFailure`,
+`GetNextPendingOccurrence`, `AcquirePendingLease`, `RenewPendingLease`,
+`CompletePendingOccurrence`, `ReleasePendingLease`, `RemoveStalePendingOccurrence`,
+`QueueFollowUpOccurrence`, `FlushUnplannedFollowUp`, `CheckFollowUpChain` or
+`ResumeFollowUpChain`.
 
 Events 1022, 1023, 1024 and the `StartupRecovery` variant of 1028 come from the
 `ResilientWorkerKit.Host` category; every other event comes from the job's own
@@ -132,6 +155,7 @@ Meter name: **`ResilientWorkerKit`** (`WorkerKitMetrics.MeterName`).
 | `workerkit.job.misfires` | `Counter<long>` | `{occurrence}` | `job.id`, `policy` | Missed schedule occurrences detected |
 | `workerkit.job.overlap_skipped` | `Counter<long>` | `{occurrence}` | `job.id` | Occurrences skipped **or queued** because the previous execution was still running |
 | `workerkit.job.dead_letters` | `Counter<long>` | `{record}` | `job.id` | Dead-letter records created |
+| `workerkit.job.follow_ups` | `Counter<long>` | `{occurrence}` | `job.id` | Durable follow-up retries queued (including chains resumed by `ContinueAfterAbandoned`) |
 | `workerkit.job.duration` | `Histogram<double>` | `s` | `job.id`, `status` | Job execution duration in seconds |
 | `workerkit.job.running` | `UpDownCounter<long>` | `{execution}` | `job.id` | Currently running job executions |
 

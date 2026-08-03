@@ -225,9 +225,11 @@ kit.AddJob<OpenTicketSaleJob>("ticket-sale-open", job => job
 ```
 
 `WithRetry` retries *inside* one execution: seconds, in memory, lost if the process restarts.
-`RetryLater` queues a *new* execution in a durable store, so a redeploy during the waiting window
-does not lose it. Use `Repeating(startAt, every, count)` for "three times on the 15th, four hours
-apart". [docs/failure-handling.md](docs/failure-handling.md#retry-now-vs-retry-later)
+`RetryLater` queues a *new* execution in a durable store, executed under a revocable lease — a
+redeploy during the waiting window does not lose it, and a crash *mid-execution* re-delivers it
+once the lease expires instead of losing it. Use `Repeating(startAt, every, count)` for "three
+times on the 15th, four hours apart".
+[docs/failure-handling.md](docs/failure-handling.md#retry-now-vs-retry-later)
 
 ### Checkpoint and resume
 
@@ -463,8 +465,11 @@ succeeded. They are fixed, and the process is why [docs/](docs) matches behavior
 ## Known limitations
 
 - **No exactly-once execution.** At-least-once + checkpoints + idempotency, by design.
-- **Single active host instance.** v1 locking is in-process; running two instances against one
-  database can double-execute. Distributed locking is the top Phase 2 item.
+- **Single active host instance.** Job locking is in-process; running two instances against one
+  database can double-execute. Distributed locking is the top Phase 2 item. (One deliberate
+  exception: the pending-occurrence queue behind `RetryLater` is lease-based and
+  database-arbitrated, so *that capability* is already multi-instance correct — the engine as a
+  whole is not; see [docs/limitations.md](docs/limitations.md).)
 - **No dashboard or admin API.** A manual-trigger extension point (`IManualJobTrigger`) exists;
   the HTTP surface around it does not.
 - **Job definitions live in code**, not in the database — no runtime registration.

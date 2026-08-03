@@ -22,6 +22,24 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
 
+    # The Linux leg runs the SQL Server store tests against a real server, so the
+    # "SQL Server compatible" claim is backed by evidence on every push. The tests read
+    # RWK_SQLSERVER_CONNECTION and skip loudly where it is unset (Windows leg, local runs).
+    services:
+      mssql:
+        image: ${{ matrix.os == 'ubuntu-latest' && 'mcr.microsoft.com/mssql/server:2022-latest' || '' }}
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "WorkerKit!CI-only-1"
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'WorkerKit!CI-only-1' -C -Q 'SELECT 1' || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+          --health-start-period 20s
+
     steps:
       - uses: actions/checkout@v5
 
@@ -52,6 +70,11 @@ jobs:
           --results-directory ./TestResults
 
       - name: Integration tests
+        env:
+          # Points the SQL Server store-contract suite at the service container (Linux leg
+          # only); where unset, those tests skip with an explicit reason instead of passing
+          # vacuously or failing.
+          RWK_SQLSERVER_CONNECTION: ${{ matrix.os == 'ubuntu-latest' && 'Server=localhost,1433;User Id=sa;Password=WorkerKit!CI-only-1;TrustServerCertificate=true' || '' }}
         run: >
           dotnet test tests/ResilientWorkerKit.IntegrationTests
           --no-build --configuration Release

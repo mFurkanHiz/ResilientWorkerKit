@@ -5,6 +5,102 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html): from 1.0 onwards, breaking changes
 require a major version and additive capabilities a minor one.
 
+## [2.0.0] — Unreleased
+
+Core hardening ahead of the first NuGet publication. The headline: **executing a durably
+planned occurrence can no longer lose it**, whatever the crash timing. The version is major
+because the store contract had to change shape to make that true — and carrying the unsafe
+shape alongside the safe one, just to avoid the number, would have kept a data-loss path
+looking supported.
+
+### Breaking
+
+- **`IPendingOccurrenceStore` is now a lease contract.** 1.x claimed a pending occurrence by
+  deleting its row, which left a window — after the delete, before the first durable execution
+  record — where a crash lost the planned action permanently, unrecoverably. A delete is not
+  revocable, so the claim is now a lease: `TryAcquireLeaseAsync` (atomic, single winner,
+  token-proven), `TryRenewLeaseAsync` (the engine heartbeats at a third of the lease while the
+  run is in flight), `CompleteAsync` (the delete — only after the outcome is durably recorded
+  and any follow-up durably queued), `ReleaseAsync` (immediate return to acquirable), and
+  `GetNextAsync` now takes `nowUtc` and surfaces leased rows no earlier than their lease
+  expiry. `AddAsync` returns `bool`: a unique `(JobId, IdentityToken)` index makes the
+  database the arbiter of "already queued". Custom store implementations break at compile
+  time — deliberately, because a store that still deletes on claim silently lacks the
+  guarantee the engine now assumes. The shipped in-memory and EF Core stores are rewritten;
+  one contract test suite proves all of them (and SQL Server) identical.
+- **Explicit-time schedules fail fast on ambiguous input.** The exact same instant twice, or
+  two distinct instants within the same UTC second (occurrence identity has second precision),
+  now throw `JobConfigurationException` at registration. Both were previously absorbed
+  silently — the same-second case by silently skipping the second occurrence at runtime as a
+  "duplicate", which is the worst possible way to lose a planned action. The identity format
+  itself is unchanged, so occurrences completed under 1.x keep matching.
+- **`Repeating` validates its range.** Sub-second gaps are rejected (identity precision), and
+  a progression that would overflow representable time is a configuration error instead of a
+  raw `OverflowException` mid-flight. The schedule behind it is new (`RepeatingSchedule`) and
+  lazy: occurrences are computed on demand, so the count no longer materializes an array —
+  `count: 1_000_000_000` is fine — and `Repeating` no longer produces an
+  `ExplicitTimesSchedule`. Identities are unchanged.
+
+### Fixed
+
+- **Crash after claim, before the execution record** — the occurrence re-delivers when the
+  lease expires (this was the unrecoverable-loss window described above).
+- **Crash mid-execution of a follow-up** — same mechanism: the row was not completed, the
+  lease lapses, the same ordinal runs again. The completed-identity check still prevents
+  anything that recorded completion from running twice.
+- **Graceful shutdown during a planned action** no longer consumes it: a `Cancelled` outcome
+  releases the lease instead of completing the row, so the occurrence runs after the next
+  start. Previously the row was deleted before the run, so a redeploy at the wrong moment
+  meant the action never happened.
+- **A follow-up chain can no longer end silently when the store hiccups.** If the next
+  follow-up cannot be written durably, the current row is deliberately kept (the write
+  failure is observed, not swallowed), re-delivers, and re-plans idempotently through the
+  unique index.
+- **The lock-declined path lost its crash window.** 1.1.1 re-inserted a deleted row when the
+  job lock was unavailable; now the lease is simply released — nothing was ever deleted — and
+  the loop backs off instead of spinning against a held lock.
+- **A queued-overlap refire could drag the schedule anchor backwards.** Under
+  `QueueSingleExecution`, an occurrence that waited out a long run refired with its original
+  (older) time and rewrote the anchor past occurrences that had meanwhile been recorded as
+  overlap-skipped — re-deriving them as misfires: spurious misfire telemetry under `Skip`, and
+  an actual double execution under `RunImmediatelyOnce`. The anchor now never moves backwards.
+- **A pending-store outage can no longer hot-spin the scheduler or strand durable work.** A
+  throwing lease acquire used to make the loop recompute-and-rethrow at full speed for the
+  duration of the outage, and a throwing queue *read* was treated as "queue empty" — with a
+  quiet schedule the loop then slept forever over work it merely failed to see. Store
+  failures now back off (5 s) and force a bounded re-read.
+- **A follow-up chain no longer dies with a transient store blip at planning time.** If the
+  failed execution held a durable row, that row is retained (see above); if it was an *origin*
+  run — no row exists yet — the unwritten follow-up is now kept in-process and re-attempted
+  with backoff until the write lands (idempotent through the unique index). Previously the
+  failure was logged and the chain silently ended. If the process dies before the write ever
+  lands, the opt-in `ContinueAfterAbandoned` scan is the remaining net, and that boundary is
+  documented.
+
+### Added
+
+- **`FollowUpRetryOptions.ContinueAfterAbandoned`** (default **off**): opt-in recovery for the
+  one crash case leases cannot cover — the *origin* execution dying mid-run before its first
+  follow-up was ever planned. Recovery scans recent executions, and queues follow-up 1 exactly
+  once (database-arbitrated). Off by default because the external call may have succeeded with
+  its response unobserved; enabling it is a statement that the job body is idempotent.
+- **`WorkerKitOptions.PendingOccurrenceLeaseDuration`** (default 5 minutes) with automatic
+  renewal at a third of the duration.
+- **SQL Server is now integration-tested in CI**, not just "designed for": the store contract
+  suite runs against a SQL Server service container on the Linux leg on every push, and skips
+  loudly (never silently passes) where no server is available.
+- Package validation (`EnablePackageValidation`) on every shipped package.
+- Log events 1037–1042 for the lease lifecycle and chain recovery.
+
+### Upgrading
+
+EF Core users: the `WorkerKitPendingOccurrences` table gains four nullable lease columns and a
+unique `(JobId, IdentityToken)` index. 1.1.x could hold duplicate pairs, so **deduplicate
+before creating the index** — [docs/persistence.md](docs/persistence.md#migrating-from-11x)
+has the exact SQL. `AutoCreateSchema` demos need nothing. Code changes are only needed if you
+implemented `IPendingOccurrenceStore` yourself; jobs, builders and every other public API are
+source-compatible.
+
 ## [1.1.1] — 2026-08-02
 
 Fixes a defect that made `RetryLater` — the headline feature of 1.1.0 — not work in-process for
@@ -169,6 +265,7 @@ additive (`IJobLockProvider` is already the seam) and is planned for a 1.x relea
 
 See [docs/limitations.md](docs/limitations.md) for the full list.
 
+[2.0.0]: https://github.com/mFurkanHiz/ResilientWorkerKit/compare/v1.1.1...core-hardening-2.x
 [1.1.1]: https://github.com/mFurkanHiz/ResilientWorkerKit/releases/tag/v1.1.1
 [1.1.0]: https://github.com/mFurkanHiz/ResilientWorkerKit/releases/tag/v1.1.0
 [1.0.0]: https://github.com/mFurkanHiz/ResilientWorkerKit/releases/tag/v1.0.0

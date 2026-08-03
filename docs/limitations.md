@@ -82,9 +82,12 @@ startup — deliberately, at startup, rather than silently running in UTC.
 
 - Only in-memory and EF Core stores ship. In-memory is **not** production-suitable (state dies
   with the process); this is stated in the XML docs of every in-memory type.
-- The EF Core model is provider-agnostic and tested on SQLite; SQL Server compatibility is by
-  design (`nvarchar`/`datetime2` friendly types, no provider-specific SQL) but is not covered by
-  an automated test in this repository.
+- The EF Core model is provider-agnostic. It is tested on SQLite everywhere, and the store
+  contract suite — the lease queue included — runs against a real **SQL Server** in CI (a
+  service container on the Linux leg, for every push to `main` and every pull request).
+  Other relational providers (PostgreSQL, MySQL) remain compatible by design
+  (`nvarchar`/`datetime2`-friendly types, no provider-specific SQL) but are not exercised by
+  automated tests here.
 - Timestamps persist as UTC `DateTime`, not `DateTimeOffset`, because SQLite cannot `ORDER BY` or
   compare `DateTimeOffset`. The public abstractions still expose `DateTimeOffset`.
 - **Nothing prunes history.** Execution records, idempotency records and dead letters accumulate
@@ -113,9 +116,14 @@ copy.
 
 ## Version status
 
-v1.0.0 fixes the public API under [semantic versioning](https://semver.org): breaking changes
-require a major version, new capabilities a minor one. Types under `*.Internal` namespaces and
-`internal` types carry no compatibility guarantee at any version.
+**2.0.0 is the current line.** The public API has been fixed under
+[semantic versioning](https://semver.org) since 1.0.0: breaking changes require a major
+version, new capabilities a minor one — and 2.0.0 is itself the proof the discipline is real:
+replacing the pending-occurrence store's claim-as-delete contract with the revocable lease
+contract was a breaking change, so the major version says so instead of hiding it (the
+[CHANGELOG](../CHANGELOG.md) and [persistence.md](persistence.md) carry the migration). Types
+under `*.Internal` namespaces and `internal` types carry no compatibility guarantee at any
+version.
 
 The `net8.0` target will be dropped in a future major version once .NET 8 leaves support
 (November 2026).

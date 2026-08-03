@@ -1,0 +1,141 @@
+# Publishes the NuGet packages for ONE existing release tag. Security model:
+#
+#   - MANUAL ONLY. The single trigger is workflow_dispatch; no push, tag-push or release
+#     event can start it, so no git operation can ever publish by accident.
+#   - TAG-GATED. The workflow checks out exactly the tag given as input (missing tag = the
+#     checkout fails = nothing happens) and refuses to continue unless the tag matches the
+#     VersionPrefix in Directory.Build.props at that tag.
+#   - ENVIRONMENT-GATED. The job runs in the "nuget-release" environment; add required
+#     reviewers to that environment in the repository settings to force a manual approval
+#     click before any step executes.
+#   - CREDENTIALS. Preferred: NuGet Trusted Publishing (OIDC — no long-lived secret): create
+#     a trusted publishing policy on nuget.org for this repository and this workflow file,
+#     set the repository variable NUGET_TRUSTED_PUBLISHING=true and the secret NUGET_USER to
+#     the nuget.org username. Fallback: a scoped API key (push-only, ResilientWorkerKit*
+#     glob, shortest practical expiry) stored as the NUGET_API_KEY secret. With neither
+#     configured the workflow fails before pushing anything.
+#   - The full test suite (SQL Server included) runs against the tag before packing; a
+#     package is never pushed from a commit that did not just pass its own tests.
+#
+# See docs/release-checklist.md for the operator checklist and the rollback plan.
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish, e.g. v2.0.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # OIDC token for NuGet Trusted Publishing
+
+concurrency: release-${{ inputs.tag }}
+
+env:
+  CI: true
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.tag }} to NuGet
+    runs-on: ubuntu-latest
+    environment: nuget-release
+
+    services:
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "WorkerKit!CI-only-1"
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'WorkerKit!CI-only-1' -C -Q 'SELECT 1' || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+          --health-start-period 20s
+
+    steps:
+      # The tag gate: a missing tag fails the checkout, and a tag that does not match the
+      # version baked into the build at that tag fails the next step.
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0 # SourceLink needs full history
+
+      - name: Verify the tag matches the package version
+        run: |
+          VERSION=$(sed -n 's/.*<VersionPrefix>\(.*\)<\/VersionPrefix>.*/\1/p' Directory.Build.props)
+          if [ "v$VERSION" != "${{ inputs.tag }}" ]; then
+            echo "::error::Tag '${{ inputs.tag }}' does not match VersionPrefix '$VERSION' at that tag."
+            exit 1
+          fi
+          echo "Publishing version $VERSION"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build (warnings as errors)
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Unit tests
+        run: dotnet test tests/ResilientWorkerKit.UnitTests --no-build --configuration Release
+
+      - name: Integration tests (SQL Server included)
+        env:
+          RWK_SQLSERVER_CONNECTION: "Server=localhost,1433;User Id=sa;Password=WorkerKit!CI-only-1;TrustServerCertificate=true"
+        run: dotnet test tests/ResilientWorkerKit.IntegrationTests --no-build --configuration Release
+
+      - name: Pack
+        run: |
+          for project in src/*/*.csproj; do
+            dotnet pack "$project" --configuration Release --no-build --output ./artifacts
+          done
+          ls -l artifacts
+
+      # Preferred credential: Trusted Publishing (OIDC). Requires the policy on nuget.org,
+      # the NUGET_TRUSTED_PUBLISHING=true repository variable and the NUGET_USER secret.
+      - name: NuGet login (Trusted Publishing)
+        id: trusted
+        if: vars.NUGET_TRUSTED_PUBLISHING == 'true'
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Push packages (and their symbol packages)
+        env:
+          NUGET_PUSH_KEY: ${{ steps.trusted.outputs.NUGET_API_KEY || secrets.NUGET_API_KEY }}
+        run: |
+          if [ -z "$NUGET_PUSH_KEY" ]; then
+            echo "::error::No credential available. Configure Trusted Publishing (preferred) or the scoped NUGET_API_KEY secret — see docs/release-checklist.md."
+            exit 1
+          fi
+          for pkg in artifacts/*.nupkg; do
+            dotnet nuget push "$pkg" \
+              --api-key "$NUGET_PUSH_KEY" \
+              --source https://api.nuget.org/v3/index.json \
+              --skip-duplicate
+          done
+
+      - name: Upload published artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: published-packages-${{ inputs.tag }}
+          path: |
+            artifacts/*.nupkg
+            artifacts/*.snupkg
+          if-no-files-found: error

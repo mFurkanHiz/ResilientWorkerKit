@@ -6,61 +6,60 @@ session reads [master-plan.md](master-plan.md), this file, and
 
 ## Current stage
 
-**Stage 1 — Core hardening: implementation complete.** Branch `core-hardening-2.x`; a pull
-request to `main` carries the full diff. The stage is closed for code; what remains is the
-owner's decision at the gate: merge approval and `DEVAM: SONRAKİ AŞAMAYA GEÇ` for stage 2
-(release readiness). **Nothing has been published to NuGet and no tag exists for 2.0.0.**
+**Stage 2 — Core NuGet release readiness: complete; awaiting the publication gate.**
+Stage 1 was merged to `main` via PR #1 (squash commit `594d913`, main CI green). Stage 2 ran
+on branch `release-readiness-2.0`. **Nothing is published, no tag exists, no GitHub release
+was created, no package ID was reserved.** Stage 2B (actual publication) starts only on the
+owner's explicit `NUGET YAYININI ONAYLIYORUM`.
 
-## What stage 1 delivered
+## What stage 2 delivered
 
-- **Lease-based pending-occurrence safety** (D-001, option A — breaking): acquire → heartbeat
-  renewal at duration ∕ 3 → outcome-gated complete / release; visibility-based expiry
-  recovery; unique `(JobId, IdentityToken)` index as the cross-process "already queued"
-  arbiter; version set to **2.0.0** (D-007).
-- **Crash semantics** (D-002): re-delivery at the same ordinal for pending-sourced runs;
-  `Cancelled` never completes a row; opt-in `ContinueAfterAbandoned` for origin crashes;
-  origin plan-write failures retried in-process with backoff.
-- **Validation**: explicit-times duplicate/same-second fail-fast (D-004); lazy
-  `RepeatingSchedule` with range checks (D-005); global `WorkerKitOptions` fail-fast
-  validation (lease duration, host id presence and column-limit length, non-negative
-  timeouts) run before any loop is constructed.
-- **Two adversarial review rounds**, pre- and post-implementation; all confirmed findings
-  fixed test-first and recorded as amendments in the decision log (including a pre-existing
-  1.x anchor-regression defect).
-- **SQL Server proven in CI** (D-006): the store contract suite runs against a service
-  container on the Linux leg — zero skips there; skips on Windows and locally are explicit.
-- `EnablePackageValidation` on all five packages; documentation consistency pass (no v0.1 or
-  claim-as-delete remnants; observability catalogue complete through event 1042; migration
-  SQL with the required dedup step in [persistence.md](persistence.md)).
+- **Per-package NuGet READMEs** (5 short pages written for nuget.org: absolute links, honest
+  scope, quick starts verified against the real APIs) replacing the long repository README in
+  the packages; **package icon** (`assets/icon.png`) wired into all five.
+- **Metadata:** `PackageReleaseNotes` → CHANGELOG; existing descriptions/tags/license/
+  SourceLink audit passed; `EnablePackageValidation` remains on.
+- **SourceLink + symbols verified:** `sourcelink test` passed on all 10 PDBs (5 packages ×
+  2 TFMs) extracted from the `.snupkg` files of a CI-equivalent pack.
+- **Clean consumer smoke test:** a fresh console project restored **only** from the local
+  `artifacts/` feed (+nuget.org for framework deps), built and ran a real job on **net10.0
+  and net8.0** — the net8.0 consumer resolved the 8.0.x dependency line, proving the
+  framework-matched dependency claim at package level.
+- **Dependency audit:** zero vulnerable (incl. transitive); only deprecated item is the
+  test-only `xunit 2.9.3` (Legacy; migration to xunit.v3 is a future chore, ships in no
+  package); "outdated" hits are the net8.0 group seeing 10.x — by design.
+- **Release workflow** ([release.yml](../.github/workflows/release.yml)): manual-only,
+  tag-gated, `nuget-release` environment-gated, full tests (SQL Server service container)
+  against the exact tag, Trusted Publishing (OIDC) preferred with scoped-API-key fallback,
+  `--skip-duplicate` idempotent pushes. No push-based trigger exists.
+- **[release-checklist.md](release-checklist.md):** operator checklist, credential setup,
+  ownership plan, rollback/unlist plan, and the exact stage-2B publish sequence.
+- **Package ID availability:** all five `ResilientWorkerKit*` ids return 404 on nuget.org —
+  available; deliberately not reserved (needs owner approval).
+- [roadmap.md](roadmap.md) publication section updated to the real state.
 
-## Verified state (final for this stage)
+## Verified state
 
-- **Last code commit:** `26ae6f6` (options validation); this status update lands as the
-  commit after it, which is the PR head. The binding CI evidence for the stage is the check
-  run **on that PR head** — recorded in the PR's checks and in the stage-closure report.
-- **Local (Release, both TFMs):** unit **251/251**; integration **47 passed + 14 SQL Server
-  skips** (no Docker locally, by design); `dotnet format` clean; zero build warnings; all 5
-  packages pack with package validation enabled.
-- **CI expectation on the PR head** (matched by the previous head's run, id 30802298893, all
-  jobs green): ubuntu — unit 251 × 2 TFMs, integration **61/61 with zero skips** (SQL Server
-  service container); windows — unit 251 × 2 TFMs, integration 47 + 14 explicit skips;
-  format, vulnerable-dependency gate, sample builds and pack all green. Coverage (Linux leg):
-  ~86% line / ~79% branch / ~94% method — a measurement, not a quality guarantee.
+- Branch `release-readiness-2.0`; CI on its head: see the stage-2 closure report (dispatched
+  run on the exact head).
+- Local (Release, CI=true): full build zero warnings; unit 251 × 2 TFMs and integration
+  47 + 14 SQL-skips × 2 TFMs green; `dotnet format` clean; 10 artifacts packed with
+  validation; consumer smoke tests green on both TFMs.
 
-## Open risks (deliberate, documented)
+## Open risks
 
-1. Multi-instance boundary unchanged: only the pending-occurrence capability is lease-proven
-   for multiple hosts; job locks, startup recovery, schedule dedup and cross-process wake
-   remain single-instance ([limitations.md](limitations.md)).
-2. An origin chain is lost only if the process dies before its follow-up write ever lands
-   *and* `ContinueAfterAbandoned` is off — stated in [failure-handling.md](failure-handling.md).
-3. Cross-host clock skew must stay under lease ∕ 3 (~100 s at the default) — stated in
-   [persistence.md](persistence.md).
-4. Package-baseline API validation becomes possible only after the first NuGet publication
-   (stage 2 concern).
+1. Trusted Publishing requires one-time setup on nuget.org by the account owner (policy +
+   `NUGET_USER` secret + `NUGET_TRUSTED_PUBLISHING` variable) — or the scoped-key fallback;
+   neither can be prepared by this repository alone.
+2. The `nuget-release` environment exists only once created in repository settings; adding
+   required reviewers there is recommended before 2B.
+3. nuget.org README/icon rendering can only be finally confirmed after the first publish
+   (checklist step 4 covers it).
+4. Multi-instance limits and the origin-chain boundary are unchanged from stage 1 —
+   documented, not blocking publication.
 
 ## Next step
 
-**Waiting on the owner:** merge decision for the PR and stage-2 approval
-(`DEVAM: SONRAKİ AŞAMAYA GEÇ`). No merge, no publication and no stage-2 work happens before
-that.
+**Waiting on the owner:** `NUGET YAYININI ONAYLIYORUM` for stage 2B (tag `v2.0.0`, dispatch
+the Release workflow, verify nuget.org, flip the README install section, GitHub release).
+Until then: no tag, no release, no publish, no Dynamic Scheduling work.

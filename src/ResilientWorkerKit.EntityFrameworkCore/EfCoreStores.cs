@@ -531,9 +531,12 @@ public sealed class EfCorePendingOccurrenceStore : IPendingOccurrenceStore
         await using (db.ConfigureAwait(false))
         {
             // The conditional update IS the race arbiter: of any number of concurrent callers,
-            // the database lets exactly one match the unleased-or-expired predicate.
+            // the database lets exactly one match the unleased-or-expired predicate. The
+            // boundary is inclusive (expired means expiry <= now) to match GetNextAsync, which
+            // surfaces a leased row AT its expiry — a caller woken exactly then must succeed,
+            // not spin one instant short of the predicate.
             var won = await db.PendingOccurrences
-                .Where(p => p.Id == id && (p.LeaseToken == null || p.LeaseExpiresAtUtc < now))
+                .Where(p => p.Id == id && (p.LeaseToken == null || p.LeaseExpiresAtUtc <= now))
                 .ExecuteUpdateAsync(s => s
                     .SetProperty(p => p.LeaseOwner, owner)
                     .SetProperty(p => p.LeaseToken, token)

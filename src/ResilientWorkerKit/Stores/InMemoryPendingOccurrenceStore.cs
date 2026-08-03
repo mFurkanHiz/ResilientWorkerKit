@@ -64,8 +64,10 @@ public sealed class InMemoryPendingOccurrenceStore : IPendingOccurrenceStore
     {
         lock (_gate)
         {
+            // Inclusive expiry boundary, matching GetNextAsync's visibility: a row surfaced AT
+            // its lease expiry is acquirable at that same instant.
             if (!_entries.TryGetValue(id, out var entry)
-                || (entry.LeaseToken is not null && entry.LeaseExpiresAtUtc >= nowUtc))
+                || (entry.LeaseToken is not null && entry.LeaseExpiresAtUtc > nowUtc))
             {
                 return Task.FromResult<string?>(null);
             }

@@ -129,6 +129,19 @@ public abstract class PendingOccurrenceLeaseContract
     }
 
     [SkippableFact]
+    public async Task ALease_IsAcquirable_AtExactlyItsExpiryInstant()
+    {
+        // GetNextAsync surfaces a leased row AT its expiry, so a scheduler woken exactly then
+        // must be able to acquire — an exclusive boundary would leave it spinning one instant
+        // short of the predicate.
+        var store = await CreateStoreAsync();
+        await store.AddAsync(Row());
+
+        Assert.NotNull(await store.TryAcquireLeaseAsync("row-1", "host-a", Lease, T0));
+        Assert.NotNull(await store.TryAcquireLeaseAsync("row-1", "host-b", Lease, T0 + Lease));
+    }
+
+    [SkippableFact]
     public async Task Renew_ExtendsTheLease()
     {
         var store = await CreateStoreAsync();

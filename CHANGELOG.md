@@ -59,6 +59,23 @@ looking supported.
 - **The lock-declined path lost its crash window.** 1.1.1 re-inserted a deleted row when the
   job lock was unavailable; now the lease is simply released — nothing was ever deleted — and
   the loop backs off instead of spinning against a held lock.
+- **A queued-overlap refire could drag the schedule anchor backwards.** Under
+  `QueueSingleExecution`, an occurrence that waited out a long run refired with its original
+  (older) time and rewrote the anchor past occurrences that had meanwhile been recorded as
+  overlap-skipped — re-deriving them as misfires: spurious misfire telemetry under `Skip`, and
+  an actual double execution under `RunImmediatelyOnce`. The anchor now never moves backwards.
+- **A pending-store outage can no longer hot-spin the scheduler or strand durable work.** A
+  throwing lease acquire used to make the loop recompute-and-rethrow at full speed for the
+  duration of the outage, and a throwing queue *read* was treated as "queue empty" — with a
+  quiet schedule the loop then slept forever over work it merely failed to see. Store
+  failures now back off (5 s) and force a bounded re-read.
+- **A follow-up chain no longer dies with a transient store blip at planning time.** If the
+  failed execution held a durable row, that row is retained (see above); if it was an *origin*
+  run — no row exists yet — the unwritten follow-up is now kept in-process and re-attempted
+  with backoff until the write lands (idempotent through the unique index). Previously the
+  failure was logged and the chain silently ended. If the process dies before the write ever
+  lands, the opt-in `ContinueAfterAbandoned` scan is the remaining net, and that boundary is
+  documented.
 
 ### Added
 

@@ -398,6 +398,10 @@ job.RetryLater(o =>
   transient store outage at exactly the wrong moment), the current row is deliberately *not*
   completed: its lease lapses, the occurrence re-delivers at the same ordinal, and re-planning
   is idempotent — the unique `(JobId, IdentityToken)` index turns a second write into a no-op.
+  An *origin* run has no row to retain, so its unwritten follow-up is kept in-process and
+  re-attempted with backoff until the write lands; only the process dying before that — with
+  `ContinueAfterAbandoned` off — loses the chain, and that boundary is stated here rather
+  than discovered.
 - **Its identity stays bounded.** Each follow-up is identified as `<origin>+followup-<n>`,
   derived from the original occurrence rather than chained onto the previous retry.
 

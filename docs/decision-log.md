@@ -216,6 +216,29 @@ document* — leaves blocking problem B open.
   cannot undo side effects already performed, and the duplicate-execution corner is the
   documented at-least-once trade.
 
+**Amendments from the post-implementation adversarial review** (four lenses over the final
+diff, findings independently verified before acceptance):
+
+- **Origin plan-write failures are retried in-process.** The outcome-gated completion above
+  protects runs that hold a durable row; an *origin* run has no row, so a transient `AddAsync`
+  failure used to lose the chain while the process kept running — reachable without any crash.
+  The unwritten follow-up is now stashed in the loop and re-attempted with a 5-second backoff
+  until the write lands (idempotent via D-003's unique index). Process death before the write
+  still loses the chain unless `ContinueAfterAbandoned` is on; that residual boundary is
+  documented rather than silent.
+- **Every pending-store failure path backs off; every recovery path forces its own wake.** A
+  throwing acquire (or stale-row cleanup) now defers pending work by 5 seconds instead of
+  spinning compute–fire–throw at full speed; a throwing queue read schedules a forced re-read
+  instead of masquerading as "queue empty" and sleeping forever. The decline cooldown became
+  the general pending-backoff.
+- **Lease expiry is inclusive.** `GetNextAsync` surfaces a leased row *at* its expiry, so the
+  acquire predicate treats a lease expiring at `now` as expired (`<=`, both stores) — an
+  exclusive boundary left a woken scheduler spinning one instant short of acquirability,
+  observable under a fake clock advanced exactly to the expiry.
+- **The schedule anchor never moves backwards** (a pre-existing 1.x defect the review caught:
+  a queued-overlap refire rewrote the anchor to its older occurrence time, re-deriving
+  already-skipped occurrences as misfires — double execution under `RunImmediatelyOnce`).
+
 **Revisit if:** execution records ever stop encoding the ordinal in `ScheduledExecutionId`;
 the ordinal would then need its own column (additive schema change).
 

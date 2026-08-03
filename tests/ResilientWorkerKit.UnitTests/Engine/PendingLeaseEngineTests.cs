@@ -238,6 +238,148 @@ public class PendingLeaseEngineTests
         Assert.Equal(1, attempts);
     }
 
+    [Fact]
+    public async Task AFailingAcquire_BacksOff_InsteadOfSpinningAgainstTheStore()
+    {
+        // A due, unleased row plus a store whose writes throw is the hot-spin recipe: compute
+        // returns the row as actionable now, the acquire throws, and without a backoff the
+        // loop recomputes immediately, hammering a store that is already in trouble.
+        var faulty = new FailingAddPendingStore { FailAcquires = true };
+        var attempts = 0;
+        await using var harness = new LoopHarness(async (_, _) =>
+        {
+            Interlocked.Increment(ref attempts);
+            await Task.Yield();
+        },
+        yieldingStores: true,
+        wrapPendingStore: inner => faulty.Wrap(inner));
+
+        await harness.SeedPendingAsync(JobId, "planned-action", dueAtUtc: T0.AddMinutes(-1));
+        harness.StartLoop(QuietDefinition());
+
+        // Give the loop real time to spin if it is going to. Virtual time stands still, so the
+        // 5-second backoff never elapses: a fixed loop must attempt one acquire and stop.
+        await harness.WaitUntilAsync(() => Task.FromResult(faulty.AcquireAttempts >= 1));
+        await Task.Delay(300);
+        Assert.InRange(faulty.AcquireAttempts, 1, 3);
+
+        // Store heals; after the backoff the occurrence runs and drains.
+        faulty.FailAcquires = false;
+        await harness.AdvanceUntilAsync(TimeSpan.FromSeconds(5),
+            async () => attempts >= 1 && await harness.PendingOccurrences.CountAsync(JobId) == 0);
+    }
+
+    [Fact]
+    public async Task ATransientReadFailure_DoesNotStallDurableWork()
+    {
+        // If reading the queue throws, "null" must not be taken as "queue empty": with a quiet
+        // schedule the loop would sleep forever over durable work it merely failed to see.
+        var faulty = new FailingAddPendingStore { FailReads = true };
+        var attempts = 0;
+        await using var harness = new LoopHarness(async (_, _) =>
+        {
+            Interlocked.Increment(ref attempts);
+            await Task.Yield();
+        },
+        yieldingStores: true,
+        wrapPendingStore: inner => faulty.Wrap(inner));
+
+        await harness.SeedPendingAsync(JobId, "planned-action", dueAtUtc: T0.AddMinutes(-1));
+        harness.StartLoop(QuietDefinition());
+
+        await harness.AssertNotHappeningAsync(() => Task.FromResult(attempts > 0));
+
+        // Store heals; the forced re-read (not any schedule event) must find the row.
+        faulty.FailReads = false;
+        await harness.AdvanceUntilAsync(TimeSpan.FromSeconds(5),
+            async () => attempts >= 1 && await harness.PendingOccurrences.CountAsync(JobId) == 0);
+    }
+
+    [Fact]
+    public async Task OriginPlanWriteFailure_IsRetriedInProcess_UntilDurable()
+    {
+        // An origin run has no row and no lease, so the row-retention protection cannot apply.
+        // A transiently failed follow-up write must be re-attempted in-process — losing the
+        // chain because the store blipped at exactly planning time is not acceptable.
+        var faulty = new FailingAddPendingStore { FailAdds = true };
+        var attempts = 0;
+        await using var harness = new LoopHarness(async (_, _) =>
+        {
+            Interlocked.Increment(ref attempts);
+            await Task.Yield();
+            throw new TransientJobException("upstream down");
+        },
+        yieldingStores: true,
+        wrapPendingStore: inner => faulty.Wrap(inner));
+
+        harness.StartLoop(RunnerHarness.Definition(b => b
+            .AtTimes(T0.AddMinutes(-1))
+            .WithRetryCount(0)
+            .RetryLater(o =>
+            {
+                o.MaxAttempts = 2;
+                o.Delay = TimeSpan.FromMinutes(5);
+                o.MaxDelay = TimeSpan.FromMinutes(5);
+            })));
+
+        // The origin fails and its follow-up write fails; nothing is durable yet.
+        await harness.WaitUntilAsync(async () => await harness.CountAsync(JobId) >= 1);
+        await Task.Delay(100);
+        Assert.Equal(0, await harness.PendingOccurrences.CountAsync(JobId));
+
+        // Store heals; the in-process flush (after its backoff) writes follow-up 1, which then
+        // runs at its due time — the chain survived a transient outage without a restart.
+        faulty.FailAdds = false;
+        await harness.AdvanceUntilAsync(TimeSpan.FromSeconds(5),
+            async () => await harness.PendingOccurrences.CountAsync(JobId) >= 1);
+        await harness.AdvanceUntilAsync(TimeSpan.FromMinutes(1),
+            async () => await harness.CountAsync(JobId, "follow-up") >= 1);
+    }
+
+    [Fact]
+    public async Task AQueuedOverlapRefire_DoesNotRegressTheAnchor_AndResurrectSkippedOccurrences()
+    {
+        // QueueSingleExecution, one long run spanning two occurrences: A is queued, B is
+        // skipped (recorded and metered as dropped). When A refires after the run, it must not
+        // drag the schedule anchor back before B — that would re-derive B as a "missed"
+        // occurrence and, under RunImmediatelyOnce, execute work the overlap policy already
+        // declared dropped.
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstRun = true;
+        await using var harness = new LoopHarness(async (_, ct) =>
+        {
+            if (firstRun)
+            {
+                firstRun = false;
+                await release.Task.WaitAsync(ct);
+                return;
+            }
+
+            await Task.Yield();
+        }, yieldingStores: true);
+
+        harness.StartLoop(RunnerHarness.Definition(b => b
+            .WithInterval(TimeSpan.FromMinutes(1))
+            .WithRetryCount(0)
+            .WithMisfirePolicy(MisfirePolicy.RunImmediatelyOnce)
+            .PreventOverlappingExecutions(OverlapPolicy.QueueSingleExecution)));
+
+        // First occurrence starts and blocks; two more come due while it runs: A queues, B skips.
+        await harness.AdvanceUntilAsync(TimeSpan.FromMinutes(1),
+            async () => (await harness.RecordsAsync(JobId)).Count(r => r.Status == JobExecutionStatus.Running) >= 1);
+        harness.Time.Advance(TimeSpan.FromMinutes(1)); // A due
+        await Task.Delay(100);
+        harness.Time.Advance(TimeSpan.FromMinutes(1)); // B due -> skipped (queue occupied)
+        await Task.Delay(100);
+
+        release.SetResult();
+
+        // The queued occurrence runs. Settle without advancing time: any resurrection of B
+        // would fire here as a "misfire" execution.
+        await harness.WaitUntilAsync(async () => await harness.CountAsync(JobId, "queued-overlap") >= 1);
+        await harness.AssertNotHappeningAsync(async () => await harness.CountAsync(JobId, "misfire") > 0);
+    }
+
     // ---- ContinueAfterAbandoned (D-002) ---------------------------------------------------
 
     private static JobDefinition ResumingDefinition(bool optIn = true, int maxAttempts = 3)
@@ -343,12 +485,20 @@ internal sealed class DenyingLockProvider : IJobLockProvider
             : _inner.TryAcquireAsync(jobId, timeout, cancellationToken);
 }
 
-/// <summary>Fault injection: fails every AddAsync while <see cref="FailAdds"/> is set.</summary>
+/// <summary>Fault injection for the pending store: individual operations fail on demand.</summary>
 internal sealed class FailingAddPendingStore : IPendingOccurrenceStore
 {
     private IPendingOccurrenceStore _inner = null!;
+    private int _acquireAttempts;
 
     public bool FailAdds { get; set; }
+
+    public bool FailAcquires { get; set; }
+
+    public bool FailReads { get; set; }
+
+    /// <summary>Total acquire calls, including failed ones — the hot-spin canary.</summary>
+    public int AcquireAttempts => Volatile.Read(ref _acquireAttempts);
 
     public IPendingOccurrenceStore Wrap(IPendingOccurrenceStore inner)
     {
@@ -364,11 +514,22 @@ internal sealed class FailingAddPendingStore : IPendingOccurrenceStore
             : await _inner.AddAsync(occurrence, cancellationToken);
     }
 
-    public Task<PendingOccurrence?> GetNextAsync(string jobId, DateTimeOffset nowUtc, CancellationToken cancellationToken = default)
-        => _inner.GetNextAsync(jobId, nowUtc, cancellationToken);
+    public async Task<PendingOccurrence?> GetNextAsync(string jobId, DateTimeOffset nowUtc, CancellationToken cancellationToken = default)
+    {
+        await Task.Yield();
+        return FailReads
+            ? throw new InvalidOperationException("Injected store failure.")
+            : await _inner.GetNextAsync(jobId, nowUtc, cancellationToken);
+    }
 
-    public Task<string?> TryAcquireLeaseAsync(string id, string owner, TimeSpan duration, DateTimeOffset nowUtc, CancellationToken cancellationToken = default)
-        => _inner.TryAcquireLeaseAsync(id, owner, duration, nowUtc, cancellationToken);
+    public async Task<string?> TryAcquireLeaseAsync(string id, string owner, TimeSpan duration, DateTimeOffset nowUtc, CancellationToken cancellationToken = default)
+    {
+        Interlocked.Increment(ref _acquireAttempts);
+        await Task.Yield();
+        return FailAcquires
+            ? throw new InvalidOperationException("Injected store failure.")
+            : await _inner.TryAcquireLeaseAsync(id, owner, duration, nowUtc, cancellationToken);
+    }
 
     public Task<bool> TryRenewLeaseAsync(string id, string leaseToken, TimeSpan duration, DateTimeOffset nowUtc, CancellationToken cancellationToken = default)
         => _inner.TryRenewLeaseAsync(id, leaseToken, duration, nowUtc, cancellationToken);

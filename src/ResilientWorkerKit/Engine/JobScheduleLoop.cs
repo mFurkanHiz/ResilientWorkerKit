@@ -84,11 +84,33 @@ internal sealed class JobScheduleLoop
     private readonly TimeProvider _time;
     private readonly ILogger _logger;
 
+    /// <summary>Retry cadence after a pending-store operation failed (see the backoff fields).</summary>
+    private static readonly TimeSpan StoreRetryDelay = TimeSpan.FromSeconds(5);
+
     /// <summary>
-    /// UTC ticks until which pending work is not re-attempted after the runner declined the
-    /// job lock — without it, release-and-recompute would spin hot on a held lock.
+    /// UTC ticks until which pending work is not re-attempted — set when the runner declined
+    /// the job lock and when a pending-store write threw. Without it, a due row plus a failing
+    /// acquire (or a held lock) would make compute-fire-recompute spin hot, hammering the
+    /// store for the whole duration of an outage.
     /// </summary>
-    private long _declineCooldownUntilTicks;
+    private long _pendingBackoffUntilTicks;
+
+    /// <summary>
+    /// UTC ticks of a forced wake-up, or 0. Set when reading the pending queue failed — the
+    /// loop must not conclude "queue empty" from an outage and sleep forever over durable
+    /// work — and consulted by <see cref="BuildDelay"/> alongside the flush schedule below.
+    /// </summary>
+    private long _pendingRecheckAtTicks;
+
+    /// <summary>
+    /// Follow-ups that could not be written durably by an origin run (no row, no lease — the
+    /// row-retention protection does not apply). Kept in-process and re-attempted with backoff
+    /// until the write succeeds; the unique (JobId, IdentityToken) index makes re-attempts
+    /// idempotent. If the process dies first, the opt-in ContinueAfterAbandoned scan is the
+    /// remaining net, which is documented.
+    /// </summary>
+    private readonly List<PendingOccurrence> _unplannedFollowUps = new();
+    private long _nextUnplannedFlushTicks;
     private readonly Channel<ManualTriggerRequest> _manualTriggers =
         Channel.CreateUnbounded<ManualTriggerRequest>(new UnboundedChannelOptions { SingleReader = true });
 
@@ -190,6 +212,7 @@ internal sealed class JobScheduleLoop
         while (!stoppingToken.IsCancellationRequested)
         {
             HarvestFinishedRuns();
+            await FlushUnplannedFollowUpsAsync(stoppingToken).ConfigureAwait(false);
 
             var next = await ComputeNextWorkAsync(stoppingToken).ConfigureAwait(false);
             _health.OnNextOccurrence(_def.JobId, next?.Occurrence.ScheduledAtUtc);
@@ -316,17 +339,32 @@ internal sealed class JobScheduleLoop
     /// </summary>
     private Task BuildDelay(NextWork? next, bool atCapacity, CancellationToken token)
     {
+        // A forced wake (pending re-read after a failed read, or a flush re-attempt) bounds
+        // every sleep below, including the "nothing to do" and "wait for capacity" ones:
+        // recovery work must not depend on an unrelated event happening to wake the loop.
+        var forcedWake = NextForcedWakeUtc();
+
         if (next is not { } work)
         {
-            return Task.Delay(Timeout.InfiniteTimeSpan, _time, token);
+            return forcedWake is { } wake
+                ? DelayUntilAsync(wake, token)
+                : Task.Delay(Timeout.InfiniteTimeSpan, _time, token);
         }
 
         if (atCapacity && work.IsOutOfBand && work.EffectiveDueAtUtc <= _time.GetUtcNow())
         {
-            return Task.Delay(Timeout.InfiniteTimeSpan, _time, token);
+            return forcedWake is { } wake
+                ? DelayUntilAsync(wake, token)
+                : Task.Delay(Timeout.InfiniteTimeSpan, _time, token);
         }
 
-        return DelayUntilAsync(work.EffectiveDueAtUtc, token);
+        var target = work.EffectiveDueAtUtc;
+        if (forcedWake is { } cap && cap < target)
+        {
+            target = cap;
+        }
+
+        return DelayUntilAsync(target, token);
     }
 
     /// <summary>
@@ -522,10 +560,10 @@ internal sealed class JobScheduleLoop
             actionableAt = leaseExpiry;
         }
 
-        var cooldownUntil = new DateTimeOffset(Volatile.Read(ref _declineCooldownUntilTicks), TimeSpan.Zero);
-        if (cooldownUntil > actionableAt)
+        var backoffUntil = new DateTimeOffset(Volatile.Read(ref _pendingBackoffUntilTicks), TimeSpan.Zero);
+        if (backoffUntil > actionableAt)
         {
-            actionableAt = cooldownUntil;
+            actionableAt = backoffUntil;
         }
 
         if (scheduled is not null && scheduled.Occurrence.ScheduledAtUtc <= actionableAt)
@@ -550,8 +588,10 @@ internal sealed class JobScheduleLoop
     {
         try
         {
-            return await _pendingStore.GetNextAsync(_def.JobId, _time.GetUtcNow(), cancellationToken)
+            var next = await _pendingStore.GetNextAsync(_def.JobId, _time.GetUtcNow(), cancellationToken)
                 .ConfigureAwait(false);
+            Volatile.Write(ref _pendingRecheckAtTicks, 0);
+            return next;
         }
         catch (OperationCanceledException)
         {
@@ -559,7 +599,10 @@ internal sealed class JobScheduleLoop
         }
         catch (Exception ex)
         {
+            // Null must not mean "queue empty" here: with no schedule the loop would sleep
+            // forever over durable work it merely failed to see. Force a re-read.
             JobLog.StoreOperationFailed(_logger, ex, "GetNextPendingOccurrence");
+            Volatile.Write(ref _pendingRecheckAtTicks, (_time.GetUtcNow() + StoreRetryDelay).UtcTicks);
             return null;
         }
     }
@@ -674,8 +717,11 @@ internal sealed class JobScheduleLoop
         var trigger = work.Trigger;
 
         // Out-of-band work never advances the schedule phase: a retry must not decide when the
-        // next scheduled occurrence is due.
-        if (!work.IsOutOfBand)
+        // next scheduled occurrence is due. And the anchor never moves BACKWARDS: an occurrence
+        // that waited in the overlap queue refires after later occurrences already advanced the
+        // phase, and regressing it would re-derive those — occurrences the overlap policy
+        // already recorded as skipped — as brand-new misfires.
+        if (!work.IsOutOfBand && (_anchorUtc is not { } anchor || occurrence.ScheduledAtUtc > anchor))
         {
             _anchorUtc = occurrence.ScheduledAtUtc;
         }
@@ -762,7 +808,10 @@ internal sealed class JobScheduleLoop
             }
             catch (Exception ex)
             {
+                // Back off: the row is due and unleased, so without this the loop would
+                // recompute and re-throw in a hot spin for the whole store outage.
                 JobLog.StoreOperationFailed(_logger, ex, "AcquirePendingLease");
+                ApplyPendingBackoff(StoreRetryDelay);
                 return;
             }
 
@@ -814,7 +863,9 @@ internal sealed class JobScheduleLoop
         }
         catch (Exception ex)
         {
+            // Same hot-spin shape as a failing acquire: the stale row stays surfaced and due.
             JobLog.StoreOperationFailed(_logger, ex, "RemoveStalePendingOccurrence");
+            ApplyPendingBackoff(StoreRetryDelay);
         }
     }
 
@@ -885,7 +936,8 @@ internal sealed class JobScheduleLoop
         }
 
         var planOutcome = await PlanFollowUpIfNeededAsync(
-            result, occurrence, followUpOrdinal, originScheduledExecutionId).ConfigureAwait(false);
+            result, occurrence, followUpOrdinal, originScheduledExecutionId,
+            stashOnWriteFailure: lease is null).ConfigureAwait(false);
 
         if (lease is not null)
         {
@@ -991,14 +1043,133 @@ internal sealed class JobScheduleLoop
         var cooldown = _options.LockAcquireTimeout >= TimeSpan.FromSeconds(1)
             ? _options.LockAcquireTimeout
             : TimeSpan.FromSeconds(1);
-        Volatile.Write(ref _declineCooldownUntilTicks, (_time.GetUtcNow() + cooldown).UtcTicks);
+        ApplyPendingBackoff(cooldown);
     }
 
+    /// <summary>Defers the next attempt on pending work; never shortens an existing backoff.</summary>
+    private void ApplyPendingBackoff(TimeSpan duration)
+    {
+        var until = (_time.GetUtcNow() + duration).UtcTicks;
+        if (until > Volatile.Read(ref _pendingBackoffUntilTicks))
+        {
+            Volatile.Write(ref _pendingBackoffUntilTicks, until);
+        }
+    }
+
+    /// <summary>
+    /// The earliest instant the loop must wake regardless of schedule and queue state: a
+    /// pending-queue re-read after a failed read, or a re-attempt of follow-ups that could
+    /// not be written durably. Null when neither applies.
+    /// </summary>
+    private DateTimeOffset? NextForcedWakeUtc()
+    {
+        var recheck = Volatile.Read(ref _pendingRecheckAtTicks);
+
+        long flush = 0;
+        lock (_unplannedFollowUps)
+        {
+            if (_unplannedFollowUps.Count > 0)
+            {
+                flush = Math.Max(_nextUnplannedFlushTicks, 1);
+            }
+        }
+
+        var earliest = (recheck, flush) switch
+        {
+            (0, 0) => 0,
+            (0, _) => flush,
+            (_, 0) => recheck,
+            _ => Math.Min(recheck, flush),
+        };
+
+        return earliest == 0 ? null : new DateTimeOffset(earliest, TimeSpan.Zero);
+    }
+
+    /// <summary>
+    /// Re-attempts durable writes for follow-ups an origin run failed to queue. Runs at the
+    /// top of every loop iteration; a failure backs off <see cref="StoreRetryDelay"/> rather
+    /// than hammering a store that is already in trouble.
+    /// </summary>
+    private async Task FlushUnplannedFollowUpsAsync(CancellationToken cancellationToken)
+    {
+        List<PendingOccurrence> snapshot;
+        lock (_unplannedFollowUps)
+        {
+            if (_unplannedFollowUps.Count == 0
+                || _time.GetUtcNow().UtcTicks < _nextUnplannedFlushTicks)
+            {
+                return;
+            }
+
+            snapshot = _unplannedFollowUps.ToList();
+        }
+
+        foreach (var pending in snapshot)
+        {
+            try
+            {
+                // false means the row already exists (a re-attempt raced something) — flushed
+                // either way.
+                if (await _pendingStore.AddAsync(pending, cancellationToken).ConfigureAwait(false))
+                {
+                    var policy = _def.FollowUpRetry;
+                    JobLog.FollowUpQueued(
+                        _logger, pending.FollowUpOrdinal, policy?.MaxAttempts ?? pending.FollowUpOrdinal,
+                        TimeSpan.Zero, pending.DueAtUtc);
+                    _metrics.FollowUpQueued(_def.JobId);
+                }
+                else
+                {
+                    JobLog.PendingOccurrenceAlreadyQueued(_logger, pending.IdentityToken);
+                }
+
+                lock (_unplannedFollowUps)
+                {
+                    _unplannedFollowUps.Remove(pending);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                JobLog.StoreOperationFailed(_logger, ex, "FlushUnplannedFollowUp");
+                lock (_unplannedFollowUps)
+                {
+                    _nextUnplannedFlushTicks = (_time.GetUtcNow() + StoreRetryDelay).UtcTicks;
+                }
+
+                return;
+            }
+        }
+    }
+
+    private void StashUnplannedFollowUp(PendingOccurrence pending)
+    {
+        lock (_unplannedFollowUps)
+        {
+            _unplannedFollowUps.Add(pending);
+        }
+
+        SignalWake();
+    }
+
+    /// <param name="result">The terminal outcome of the run that may need a follow-up.</param>
+    /// <param name="occurrence">The occurrence that ran.</param>
+    /// <param name="followUpOrdinal">This run's ordinal (0 for an origin run).</param>
+    /// <param name="originScheduledExecutionId">The chain's origin, when this run was a follow-up.</param>
+    /// <param name="stashOnWriteFailure">
+    /// True for origin runs, which have no durable row: a failed write is kept in-process and
+    /// re-attempted with backoff. Leased runs pass false — their protection is keeping the
+    /// current row, which re-delivers durably.
+    /// </param>
     private async Task<FollowUpPlanOutcome> PlanFollowUpIfNeededAsync(
         JobRunResult result,
         JobScheduleOccurrence occurrence,
         int followUpOrdinal,
-        string? originScheduledExecutionId)
+        string? originScheduledExecutionId,
+        bool stashOnWriteFailure)
     {
         if (_def.FollowUpRetry is not { } policy || result.Status != JobExecutionStatus.Failed)
         {
@@ -1067,6 +1238,13 @@ internal sealed class JobScheduleLoop
         catch (Exception ex)
         {
             JobLog.StoreOperationFailed(_logger, ex, "QueueFollowUpOccurrence");
+            if (stashOnWriteFailure)
+            {
+                // No row backs this chain yet, so nothing durable would retry the write. Keep
+                // it in-process and re-attempt with backoff (idempotent via the unique index).
+                StashUnplannedFollowUp(pending);
+            }
+
             return FollowUpPlanOutcome.WriteFailed;
         }
     }

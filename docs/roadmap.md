@@ -80,14 +80,20 @@ These stay out regardless of demand, because they change what the library *is*:
 ## NuGet publication
 
 Publication is intentionally **not** wired into CI, so a push can never become an accidental
-release. The remaining steps:
+release. The machinery is ready; publishing is a deliberate, manual act:
 
-1. Reserve the `ResilientWorkerKit*` package ids on nuget.org.
-2. Add a separate, manually triggered release workflow that builds, tests, packs and pushes with
-   `dotnet nuget push` using a repository secret, gated on a tag.
-3. Publish symbol packages (`.snupkg`) alongside, so SourceLink debugging works for consumers.
-4. Keep the exactly-once limitation and the single-instance constraint at the top of the release
-   notes — they are the two things an adopter most needs to know up front.
+- A separate [Release workflow](../.github/workflows/release.yml) exists: manual-only
+  (`workflow_dispatch`), tag-gated (the tag must exist and match the built version),
+  environment-gated, running the full test suite — SQL Server included — against the exact
+  tag before packing and pushing (with symbol packages alongside).
+- Credentials: NuGet **Trusted Publishing** (OIDC) preferred, a scoped push-only API key as
+  the documented fallback — see [release-checklist.md](release-checklist.md), which also
+  carries the rollback/unlist plan and the ownership plan.
+- The five package ids were verified **available** on nuget.org; none is reserved or
+  published yet. Prefix reservation for `ResilientWorkerKit.*` is planned for after the
+  first publication.
+- The release notes keep the exactly-once limitation and the single-instance constraint at
+  the top — the two things an adopter most needs to know up front.
 
 ## Target frameworks
 

@@ -12,8 +12,9 @@ jobs: typed `HttpClient` registration built on `IHttpClientFactory` and
   execution is traceable across your logs and the upstream API's.
 - **Idempotency keys:** the key handler sits *outside* the retry handler, so every retry of a
   request reuses the same `Idempotency-Key` — which is the point of having one.
-- **Auth:** API-key (`IApiKeyProvider`) and bearer (`IBearerTokenProvider`) handlers with
-  token caching and refresh-on-401.
+- **Auth:** API-key (`IApiKeyProvider`) and bearer (`IBearerTokenProvider`) handlers; wrap
+  your provider in `CachingBearerTokenProvider` for token caching, which the 401 handler then
+  invalidates so the next request acquires a fresh token.
 - **Safe errors:** `EnsureApiSuccessAsync` produces errors that never contain query strings or
   response bodies, and `ApiRequestException` feeds the engine's retry classification
   (transient vs permanent) instead of guessing from strings.

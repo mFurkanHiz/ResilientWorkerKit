@@ -5,9 +5,10 @@ Entity Framework Core persistence for
 history, checkpoints, idempotency records, dead letters and the lease-based
 pending-occurrence queue behind `RetryLater`.
 
-Verified against **SQLite** everywhere and against **SQL Server** in CI on every push (a
-store contract suite runs on a real server — the compatibility claim is evidence, not design
-intent). The model is provider-agnostic relational EF Core.
+Verified against **SQLite** everywhere and against **SQL Server** in CI — a store contract
+suite runs on a real server for every push to `main` and every pull request, so the
+compatibility claim is evidence, not design intent. The model is provider-agnostic
+relational EF Core.
 
 ## Quick start
 

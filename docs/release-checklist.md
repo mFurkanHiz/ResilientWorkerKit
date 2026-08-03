@@ -28,6 +28,12 @@ suite (SQL Server included) against the exact tag before packing what it pushes.
 
 With neither configured, the workflow stops before pushing anything.
 
+**Environment hardening (do this when creating `nuget-release`):** besides required
+reviewers, restrict the environment's *deployment branches and tags* to `v*` tags (or at
+minimum protected refs). `workflow_dispatch` runs the workflow file from whichever ref the
+dispatcher selects, so without this restriction a modified copy of `release.yml` on a side
+branch could reach the environment's approval gate; with it, only the protected refs can.
+
 ## Package ownership
 
 Packages are published under the nuget.org account that owns the credential above (the

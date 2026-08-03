@@ -71,10 +71,14 @@ jobs:
           fetch-depth: 0 # SourceLink needs full history
 
       - name: Verify the tag matches the package version
+        env:
+          # Passed through the environment, never interpolated into script text: a ref name
+          # can contain shell metacharacters, and this job later holds the push credential.
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           VERSION=$(sed -n 's/.*<VersionPrefix>\(.*\)<\/VersionPrefix>.*/\1/p' Directory.Build.props)
-          if [ "v$VERSION" != "${{ inputs.tag }}" ]; then
-            echo "::error::Tag '${{ inputs.tag }}' does not match VersionPrefix '$VERSION' at that tag."
+          if [ "v$VERSION" != "$RELEASE_TAG" ]; then
+            echo "::error::Tag '$RELEASE_TAG' does not match VersionPrefix '$VERSION' at that tag."
             exit 1
           fi
           echo "Publishing version $VERSION"
@@ -101,6 +105,7 @@ jobs:
         run: dotnet test tests/ResilientWorkerKit.IntegrationTests --no-build --configuration Release
 
       - name: Pack
+        id: pack
         run: |
           for project in src/*/*.csproj; do
             dotnet pack "$project" --configuration Release --no-build --output ./artifacts
@@ -131,7 +136,10 @@ jobs:
               --skip-duplicate
           done
 
-      - name: Upload published artifacts
+      - name: Upload packed artifacts
+        # Runs whenever packing succeeded, even if the push then failed: on a partial publish
+        # the packed bits are exactly the evidence the rollback plan needs — do not lose them.
+        if: ${{ !cancelled() && steps.pack.outcome == 'success' }}
         uses: actions/upload-artifact@v5
         with:
           name: published-packages-${{ inputs.tag }}
